@@ -28,17 +28,20 @@ export function StatusPanel({
                 {/* Connection status */}
                 <div className="space-y-2">
                     <StatusRow
-                        label="Control Link"
+                        label="Relay Server"
+                        hint="Your browser's connection to the control relay on the server (does not include the Pi)"
                         status={controlState}
                         connected={controlState === 'connected'}
                     />
                     <StatusRow
-                        label="Video Link"
+                        label="Video Stream"
+                        hint="Live video playing from the Pi via Janus"
                         status={videoState}
                         connected={videoState === 'connected'}
                     />
                     <StatusRow
-                        label="Pi Status"
+                        label="Pi Control Link"
+                        hint="The relay is receiving telemetry from the Pi's control daemon (needed to drive)"
                         status={piConnected ? 'connected' : 'disconnected'}
                         connected={piConnected}
                     />
@@ -105,13 +108,15 @@ export function StatusPanel({
 
 interface StatusRowProps {
     label: string;
+    /** Tooltip explaining exactly what this row measures. */
+    hint: string;
     status: string;
     connected: boolean;
 }
 
-function StatusRow({ label, status, connected }: StatusRowProps) {
+function StatusRow({ label, hint, status, connected }: StatusRowProps) {
     return (
-        <div className="flex items-center justify-between text-xs">
+        <div className="flex items-center justify-between text-xs" title={hint}>
             <span className="text-gray-400">{label}</span>
             <div className="flex items-center gap-2">
                 <span className={connected ? 'text-fpv-accent' : 'text-gray-500'}>
@@ -193,7 +198,7 @@ function ArduinoLinkPanel({ link }: ArduinoLinkPanelProps) {
         return (
             <div className="text-xs text-gray-500">
                 <div className="flex justify-between">
-                    <span>Arduino Link</span>
+                    <span>Arduino (via Pi)</span>
                     <span>unknown</span>
                 </div>
             </div>
@@ -226,7 +231,7 @@ function ArduinoLinkPanel({ link }: ArduinoLinkPanelProps) {
                 </div>
             )}
             <div className="flex justify-between text-xs">
-                <span className="text-gray-400">Arduino Link</span>
+                <span className="text-gray-400">Arduino (via Pi)</span>
                 <span className={ageClass}>{ageLabel}</span>
             </div>
             <div className="flex justify-between text-[11px] text-gray-500">

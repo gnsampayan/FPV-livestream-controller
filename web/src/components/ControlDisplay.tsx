@@ -17,10 +17,9 @@ export function ControlDisplay({
     inputSource,
     gamepadConnected = false,
 }: ControlDisplayProps) {
+    // Panel chrome (title, collapse/disable) is provided by CollapsiblePanel.
     return (
-        <div className="panel">
-            <div className="panel-header">Control Input</div>
-
+        <div>
             <div className="p-3 space-y-4">
                 {/* Visual steering indicator */}
                 <div className="space-y-1">

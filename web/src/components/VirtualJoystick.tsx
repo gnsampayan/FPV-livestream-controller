@@ -68,8 +68,7 @@ export function VirtualJoystick({ onMove, onEnd, mode, disabled = false }: Virtu
         <div className="relative">
             <div
                 ref={containerRef}
-                className={`joystick-zone w-32 h-32 relative ${disabled ? 'opacity-50' : ''}`}
-                style={{ touchAction: 'none' }}
+                className={`joystick-zone w-32 h-32 relative touch-none ${disabled ? 'opacity-50' : ''}`}
             />
 
             <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 text-xs text-gray-500 hud-text whitespace-nowrap">

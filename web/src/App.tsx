@@ -4,6 +4,7 @@ import { DualJoystickController } from './components/VirtualJoystick';
 import { StatusPanel } from './components/StatusPanel';
 import { ControlDisplay } from './components/ControlDisplay';
 import { MicButton } from './components/MicButton';
+import { CollapsiblePanel } from './components/CollapsiblePanel';
 import { useControlSocket } from './hooks/useControlSocket';
 import { useKeyboardControls } from './hooks/useKeyboardControls';
 import { useGamepad } from './hooks/useGamepad';
@@ -34,16 +35,18 @@ const CONFIG = {
     controlRate: 50, // Hz - how often to send control updates
 };
 
+const NEUTRAL_JOYSTICK_INPUT = {
+    steer: 0,
+    throttle: 0,
+    camYaw: 0,
+    camPitch: 0,
+};
+
 function App() {
     const [telemetry, setTelemetry] = useState<TelemetryMessage | undefined>();
     const [videoConnected, setVideoConnected] = useState(false);
     const [tabVisible, setTabVisible] = useState(true);
-    const [joystickInput, setJoystickInput] = useState({
-        steer: 0,
-        throttle: 0,
-        camYaw: 0,
-        camPitch: 0,
-    });
+    const [joystickInput, setJoystickInput] = useState(NEUTRAL_JOYSTICK_INPUT);
     const [liveControl, setLiveControl] = useState({
         steer: 0,
         throttle: 0,
@@ -209,6 +212,29 @@ function App() {
     const inputSource = liveControl.source;
 
     const isControlReady = controlState === 'connected' && piConnected;
+    const touchControlsEnabled = isControlReady && tabVisible;
+
+    // Telemetry is only meaningful while the Pi is talking to us; don't show
+    // the last-known values as if they were live after the link drops.
+    const liveTelemetry = piConnected ? telemetry : undefined;
+
+    // Disabling the joysticks tears them down without a release event, so
+    // clear their last value or a stale deflection would be sent on reconnect.
+    useEffect(() => {
+        if (!touchControlsEnabled) {
+            setJoystickInput(NEUTRAL_JOYSTICK_INPUT);
+        }
+    }, [touchControlsEnabled]);
+
+    const controlInactiveLabel = controlState !== 'connected' ? 'RELAY OFFLINE' : 'PI OFFLINE';
+    const touchInactiveLabel = !isControlReady ? controlInactiveLabel : 'TAB INACTIVE';
+    const micReady =
+        audioBridge.connectionState === 'connected' && audioBridge.joined && tabVisible;
+    const micInactiveLabel = !tabVisible
+        ? 'TAB INACTIVE'
+        : audioBridge.connectionState === 'connecting'
+            ? 'CONNECTING'
+            : 'MIC OFFLINE';
 
     return (
         <div className="w-full h-full bg-fpv-dark flex flex-col">
@@ -229,16 +255,25 @@ function App() {
 
                         {/* Quick status */}
                         <div className="flex items-center gap-3 text-xs">
-                            <div className="flex items-center gap-1.5">
-                                <span className="text-gray-500">CTRL</span>
+                            <div
+                                className="flex items-center gap-1.5"
+                                title="Browser connection to the control relay on the server"
+                            >
+                                <span className="text-gray-500">RELAY</span>
                                 <div className={`status-dot ${controlState === 'connected' ? 'connected' : 'disconnected'}`} />
                             </div>
-                            <div className="flex items-center gap-1.5">
+                            <div
+                                className="flex items-center gap-1.5"
+                                title="Live video stream"
+                            >
                                 <span className="text-gray-500">VIDEO</span>
                                 <div className={`status-dot ${videoConnected ? 'connected' : 'disconnected'}`} />
                             </div>
-                            <div className="flex items-center gap-1.5">
-                                <span className="text-gray-500">PI</span>
+                            <div
+                                className="flex items-center gap-1.5"
+                                title="Relay is receiving telemetry from the Pi's control daemon"
+                            >
+                                <span className="text-gray-500">PI LINK</span>
                                 <div className={`status-dot ${piConnected ? 'connected' : 'disconnected'}`} />
                             </div>
                         </div>
@@ -259,21 +294,34 @@ function App() {
                     </div>
 
                     {/* Mobile joystick controls (shown on touch devices) */}
-                    <div className="flex-shrink-0 mt-4 md:hidden">
-                        <DualJoystickController
-                            onControl={handleJoystickControl}
-                            disabled={!isControlReady || !tabVisible}
-                        />
-                        <div className="mt-3 flex justify-center">
-                            <MicButton
-                                connectionState={audioBridge.connectionState}
-                                joined={audioBridge.joined}
-                                muted={audioBridge.muted}
-                                error={audioBridge.error}
-                                setMuted={audioBridge.setMuted}
-                                disabled={!tabVisible}
+                    <div className="flex-shrink-0 mt-4 space-y-3 md:hidden">
+                        <CollapsiblePanel
+                            title="Touch Controls"
+                            active={touchControlsEnabled}
+                            inactiveLabel={touchInactiveLabel}
+                        >
+                            <DualJoystickController
+                                onControl={handleJoystickControl}
+                                disabled={!touchControlsEnabled}
                             />
-                        </div>
+                        </CollapsiblePanel>
+                        <CollapsiblePanel
+                            title="Comms"
+                            active={micReady}
+                            inactiveLabel={micInactiveLabel}
+                            keepMounted
+                        >
+                            <div className="p-3 flex justify-center">
+                                <MicButton
+                                    connectionState={audioBridge.connectionState}
+                                    joined={audioBridge.joined}
+                                    muted={audioBridge.muted}
+                                    error={audioBridge.error}
+                                    setMuted={audioBridge.setMuted}
+                                    disabled={!tabVisible}
+                                />
+                            </div>
+                        </CollapsiblePanel>
                     </div>
                 </div>
 
@@ -285,34 +333,48 @@ function App() {
                         videoState={videoConnected ? 'connected' : 'disconnected'}
                         piConnected={piConnected}
                         browserClients={browserClients}
-                        telemetry={telemetry}
+                        telemetry={liveTelemetry}
                     />
 
                     {/* Control display */}
-                    <ControlDisplay
-                        steer={currentSteer}
-                        throttle={currentThrottle}
-                        brake={currentBrake}
-                        camYaw={currentCamYaw}
-                        camPitch={currentCamPitch}
-                        inputSource={inputSource}
-                        gamepadConnected={gamepad.connected}
-                    />
+                    <CollapsiblePanel
+                        title="Control Input"
+                        active={isControlReady}
+                        inactiveLabel={controlInactiveLabel}
+                    >
+                        <ControlDisplay
+                            steer={currentSteer}
+                            throttle={currentThrottle}
+                            brake={currentBrake}
+                            camYaw={currentCamYaw}
+                            camPitch={currentCamPitch}
+                            inputSource={inputSource}
+                            gamepadConnected={gamepad.connected}
+                        />
+                    </CollapsiblePanel>
 
                     {/* Desktop joystick controls */}
-                    <div className="panel">
-                        <div className="panel-header">Touch Controls</div>
+                    <CollapsiblePanel
+                        title="Touch Controls"
+                        active={touchControlsEnabled}
+                        inactiveLabel={touchInactiveLabel}
+                    >
                         <div className="p-3">
                             <DualJoystickController
                                 onControl={handleJoystickControl}
-                                disabled={!isControlReady || !tabVisible}
+                                disabled={!touchControlsEnabled}
                             />
                         </div>
-                    </div>
+                    </CollapsiblePanel>
 
-                    {/* Push-to-talk */}
-                    <div className="panel">
-                        <div className="panel-header">Comms</div>
+                    {/* Push-to-talk. Stays mounted while collapsed so the
+                        spacebar shortcut keeps working. */}
+                    <CollapsiblePanel
+                        title="Comms"
+                        active={micReady}
+                        inactiveLabel={micInactiveLabel}
+                        keepMounted
+                    >
                         <div className="p-3 flex flex-col items-center gap-2">
                             <MicButton
                                 connectionState={audioBridge.connectionState}
@@ -326,7 +388,7 @@ function App() {
                                 Hold the button or spacebar to talk to the car.
                             </p>
                         </div>
-                    </div>
+                    </CollapsiblePanel>
 
                     {/* Safety info */}
                     <div className="panel">
@@ -346,8 +408,8 @@ function App() {
                     <div className="flex items-center gap-4">
                         <span>
                             Control RTT:{' '}
-                            {telemetry?.rttMs !== undefined && telemetry.rttMs !== null
-                                ? `${telemetry.rttMs} ms`
+                            {liveTelemetry?.rttMs !== undefined && liveTelemetry.rttMs !== null
+                                ? `${liveTelemetry.rttMs} ms`
                                 : '--'}
                         </span>
                     </div>
