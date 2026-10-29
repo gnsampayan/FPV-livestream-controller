@@ -38,10 +38,17 @@ services:
     networks:
       - fpv-network
 
+  # The three locally built services below (control-relay, audiobridge-bootstrap,
+  # nginx) each declare both `build:` and `image:`.
+  #   - Locally:      `docker compose up -d --build` builds from source.
+  #   - Production:   CI builds and pushes the images to GHCR; the deploy runs
+  #                   `docker compose pull` and `up -d --no-build` with
+  #                   IMAGE_TAG set to the commit SHA being deployed.
   control-relay:
     build:
       context: ./control-relay
       dockerfile: Dockerfile
+    image: ${IMAGE_REGISTRY:-ghcr.io/gnsampayan}/fpv-control-relay:${IMAGE_TAG:-latest}
     container_name: fpv-control-relay
     restart: unless-stopped
     ports:
@@ -63,6 +70,7 @@ services:
     build:
       context: ./audiobridge-bootstrap
       dockerfile: Dockerfile
+    image: ${IMAGE_REGISTRY:-ghcr.io/gnsampayan}/fpv-audiobridge-bootstrap:${IMAGE_TAG:-latest}
     container_name: fpv-audiobridge-bootstrap
     restart: unless-stopped
     environment:
@@ -76,8 +84,17 @@ services:
     networks:
       - fpv-network
 
+  # nginx with the web app baked in (see nginx/Dockerfile). The build context
+  # is the repository root because the image needs both web/ and server/nginx/.
+  # Local builds need VITE_AUTH_TOKEN in the shell or in server/.env, matching
+  # CONTROL_AUTH_TOKEN; CI passes it from the VITE_AUTH_TOKEN secret.
   nginx:
-    image: nginx:alpine
+    build:
+      context: ..
+      dockerfile: server/nginx/Dockerfile
+      args:
+        VITE_AUTH_TOKEN: ${CONTROL_AUTH_TOKEN:-changeme}
+    image: ${IMAGE_REGISTRY:-ghcr.io/gnsampayan}/fpv-nginx-web:${IMAGE_TAG:-latest}
     container_name: fpv-nginx
     restart: unless-stopped
     ports:
@@ -89,12 +106,11 @@ services:
       # through untouched so nginx can evaluate them at request time.
       - SERVER_DOMAIN=${SERVER_DOMAIN:-localhost}
       - NGINX_ENVSUBST_FILTER=^SERVER_DOMAIN$$
+    # nginx.conf, the server-block templates and the web build are baked into
+    # the image; only TLS state is mounted.
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/templates:/etc/nginx/templates:ro
       - letsencrypt:/etc/letsencrypt:ro
       - certbot-webroot:/var/www/certbot:ro
-      - ../web/dist:/usr/share/nginx/html:ro
     # The nginx:alpine entrypoint only runs the envsubst template step when
     # $1 is literally "nginx" or "nginx-debug" (see /docker-entrypoint.sh).
     # We override CMD to wrap nginx in a 6-hour reload loop (so renewed TLS

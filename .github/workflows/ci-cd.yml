@@ -1,0 +1,216 @@
+name: CI/CD
+
+# Pull requests and pushes run the checks. Pushes to main additionally build
+# the Docker images, push them to GHCR, and deploy them to the production
+# server through a self-hosted runner that lives on that server (outbound
+# connection only: no open ports and no SSH keys stored in GitHub).
+#
+# "Run workflow" (workflow_dispatch) on main does the same but defaults to a
+# dry run: the deploy job verifies everything and changes nothing.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: verify the deploy but change nothing on the server"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "20"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Checks (GitHub-hosted runners)
+  # ---------------------------------------------------------------------------
+  control-relay:
+    name: Control relay tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server/control-relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: server/control-relay/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  pi-control-daemon:
+    name: Pi control daemon tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pi/control-daemon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pi/control-daemon/requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest tests
+
+  web:
+    name: Web type-check and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      # `npm run build` is `tsc && vite build`, so this is also the type-check.
+      - run: npm run build
+
+  config:
+    name: Shell syntax and compose validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell script syntax
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' script; do
+            echo "bash -n ${script}"
+            bash -n "${script}"
+          done < <(find pi server -name '*.sh' -print0)
+      - name: Validate docker-compose.yml
+        run: docker compose --env-file server/.env.example -f server/docker-compose.yml config --quiet
+
+  # ---------------------------------------------------------------------------
+  # Build and publish images (main only)
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build and push ${{ matrix.image }}
+    needs: [control-relay, pi-control-daemon, web, config]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - image: fpv-control-relay
+            context: server/control-relay
+            dockerfile: server/control-relay/Dockerfile
+          - image: fpv-audiobridge-bootstrap
+            context: server/audiobridge-bootstrap
+            dockerfile: server/audiobridge-bootstrap/Dockerfile
+          - image: fpv-nginx-web
+            # Needs both web/ and server/nginx/, so the context is the repo root.
+            context: .
+            dockerfile: server/nginx/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image repository (GHCR requires lower case)
+        id: repo
+        run: echo "registry=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Require the web auth token secret
+        if: matrix.image == 'fpv-nginx-web'
+        env:
+          VITE_AUTH_TOKEN: ${{ secrets.VITE_AUTH_TOKEN }}
+        run: |
+          if [ -z "${VITE_AUTH_TOKEN}" ]; then
+            echo "::error::Repository secret VITE_AUTH_TOKEN is not set. It must equal CONTROL_AUTH_TOKEN in server/.env."
+            exit 1
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ steps.repo.outputs.registry }}/${{ matrix.image }}:${{ github.sha }}
+            ${{ steps.repo.outputs.registry }}/${{ matrix.image }}:latest
+          # Links the package to this repository so the deploy job's
+          # GITHUB_TOKEN can pull it while the package stays private.
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          build-args: |
+            ${{ matrix.image == 'fpv-nginx-web' && format('VITE_AUTH_TOKEN={0}', secrets.VITE_AUTH_TOKEN) || '' }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+
+  # ---------------------------------------------------------------------------
+  # Deploy (self-hosted runner on the production server)
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to production
+    needs: build
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: [self-hosted, fpv-server]
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    # Never run two deploys at once, and never cancel one halfway through.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      DEPLOY_DIR: ${{ vars.DEPLOY_DIR }}
+      HEALTH_DOMAIN: ${{ vars.SERVER_DOMAIN }}
+      TARGET_SHA: ${{ github.sha }}
+      IMAGE_TAG: ${{ github.sha }}
+      # workflow_dispatch defaults to a dry run; pushes always deploy for real.
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '0' }}
+    steps:
+      - name: Require the DEPLOY_DIR repository variable
+        run: |
+          if [ -z "${DEPLOY_DIR}" ]; then
+            echo "::error::Repository variable DEPLOY_DIR is not set (e.g. /opt/fpv)."
+            exit 1
+          fi
+
+      # The deploy script comes from the commit being deployed, not from the
+      # server's clone (which is only updated by the script itself).
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Compute image registry (lower case)
+        run: echo "IMAGE_REGISTRY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+
+      - name: Deploy
+        run: bash server/scripts/deploy.sh
+
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io || true

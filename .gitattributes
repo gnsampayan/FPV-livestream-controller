@@ -1,4 +1,6 @@
 *.sh text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf
 
 # Files that are deployed to Linux (the Raspberry Pi) must keep LF line
 # endings even when checked out on Windows: a CR in a shebang, systemd unit,

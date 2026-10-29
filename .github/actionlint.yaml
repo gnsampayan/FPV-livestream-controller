@@ -1,0 +1,7 @@
+# Configuration for actionlint (also read by editor integrations).
+# Declares the custom label of the self-hosted runner installed on the
+# production server, so `runs-on: [self-hosted, fpv-server]` is not flagged
+# as an unknown label.
+self-hosted-runner:
+  labels:
+    - fpv-server

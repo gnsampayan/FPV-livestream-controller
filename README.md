@@ -98,17 +98,25 @@ cp .env.example .env
 # into the control-relay container as AUTH_TOKEN), plus SERVER_DOMAIN and
 # LETSENCRYPT_EMAIL if you plan to enable HTTPS.
 
-# Build and start services
-docker-compose up -d
+# Build and start services (builds the relay, audiobridge sidecar and the
+# nginx image that contains the web app)
+docker compose up -d --build
 
 # Check status
-docker-compose ps
-docker-compose logs -f
+docker compose ps
+docker compose logs -f
 ```
 
 The server will be available at `http://localhost` (or your server IP).
 
-### 3. Build the Web Frontend
+In production, pushes to `main` build these images in GitHub Actions and
+deploy them automatically; see [CI/CD](DEPLOYMENT.md#cicd-automatic-deploys-to-the-server).
+
+### 3. Web Frontend (development)
+
+The production web build is baked into the nginx image (see
+[`server/nginx/Dockerfile`](server/nginx/Dockerfile)), so you only need Node
+locally for development:
 
 ```bash
 cd web
@@ -116,12 +124,11 @@ cd web
 # Install dependencies
 npm install
 
-# For development
+# Development server with hot reload
 npm run dev
 
-# For production build
+# Type-check and production build (output in web/dist/, used only for checks)
 npm run build
-# Built files go to web/dist/ which nginx serves
 ```
 
 ### 4. Flash the Arduino Nano

@@ -1,0 +1,23 @@
+# Used by image builds whose context is the repository root
+# (server/nginx/Dockerfile). Keeps the context small and stops local
+# artifacts or secrets from being sent to the Docker daemon.
+
+.git
+.github
+.cursor
+.vscode
+
+# Local build output and dependencies are rebuilt inside the image.
+**/node_modules
+**/dist
+**/dist.old
+
+# Secrets and local configuration
+**/.env
+**/.env.local
+**/fpv.env
+
+# Not part of any image
+pi
+arduino
+*.md

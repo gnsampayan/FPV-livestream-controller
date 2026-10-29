@@ -19,6 +19,7 @@ the terminal by hand once setup is done.
 - [Command cheat sheet](#command-cheat-sheet)
 - [Measuring latency](#measuring-latency)
 - [Soak test](#soak-test)
+- [CI/CD: automatic deploys to the server](#cicd-automatic-deploys-to-the-server)
 - [Gotchas](#gotchas)
 
 ## Before you touch the Pi
@@ -354,6 +355,152 @@ Wi-Fi:
 5. Unplug the LTE dongle with Wi-Fi configured: `journalctl -u
    fpv-link-manager -f` should show a switch to Wi-Fi within ~6 seconds, and
    a switch back after the dongle returns.
+
+## CI/CD: automatic deploys to the server
+
+Every push to `main` updates the home server (the machine behind `gspyn.com`)
+without you touching it. The Raspberry Pi is **not** part of this; update it
+with `git pull` and a service restart as before.
+
+```
+push to main
+  -> GitHub-hosted runners: relay tests, Pi daemon tests, web type-check/build,
+     shell + compose validation
+  -> build and push 3 images to GitHub Container Registry (private):
+     fpv-control-relay, fpv-audiobridge-bootstrap, fpv-nginx-web (nginx + web app)
+  -> self-hosted runner ON the server: server/scripts/deploy.sh
+     backup -> git sync -> docker compose pull/up -> health check
+     -> on failure, restore the previous commit, local edits and images
+```
+
+The runner on the server only makes an outbound connection to GitHub, so it
+works from anywhere: no router port-forward and no SSH key stored in GitHub.
+The workflow is [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml).
+
+### One-time setup (on the server, over SSH)
+
+Do these once. The server's repo checkout is `/opt/fpv`.
+
+1. **Backup folder** (holds pre-deploy backups and the last-good image tag):
+
+   ```bash
+   sudo mkdir -p /opt/fpv-backups
+   sudo chown "$USER": /opt/fpv-backups
+   ```
+
+2. **Docker access** for the account that will run the runner (this guide
+   assumes `gnsampayan`, who owns `/opt/fpv`). Confirm `docker ps` works
+   without `sudo`; if not, `sudo usermod -aG docker "$USER"` and log in again.
+
+3. **Check `server/.env`** has real values for every variable below (the deploy
+   refuses to run otherwise). Print only the names:
+
+   ```bash
+   grep -oE '^[A-Z_0-9]+=' /opt/fpv/server/.env
+   ```
+
+   Required: `NAT_1_1_MAPPING`, `JANUS_ADMIN_SECRET`, `CONTROL_AUTH_TOKEN`,
+   `AUDIOBRIDGE_ADMIN_KEY`, `PI_TAILSCALE_IP`, `SERVER_DOMAIN` (plus
+   `LETSENCRYPT_EMAIL` for certificate renewal).
+
+   Values that used to be edited directly into tracked files on the server (the
+   token in `web/src/App.tsx`, IPs in `janus.jcfg`) must live in `.env` or in the
+   GitHub secret below, because every deploy replaces tracked files with the
+   repo's version.
+
+4. **Install the GitHub Actions runner.** In the repo: *Settings -> Actions ->
+   Runners -> New self-hosted runner -> Linux*. Run the commands it shows
+   (download, `./config.sh`), and when `config.sh` asks for labels, enter
+   `fpv-server`. Then install it as a service so it starts on boot:
+
+   ```bash
+   sudo ./svc.sh install "$USER"
+   sudo ./svc.sh start
+   sudo ./svc.sh status
+   ```
+
+   The runner should appear as *Idle* with the labels `self-hosted, fpv-server`.
+
+### One-time setup (on GitHub)
+
+*Settings -> Secrets and variables -> Actions*:
+
+| Kind | Name | Value |
+|---|---|---|
+| Secret | `VITE_AUTH_TOKEN` | Same value as `CONTROL_AUTH_TOKEN` in `server/.env`. Vite bakes it into the web bundle at build time, so it is visible in browser DevTools by design. |
+| Variable | `DEPLOY_DIR` | `/opt/fpv` |
+| Variable | `SERVER_DOMAIN` | `gspyn.com` |
+
+Also:
+
+- *Settings -> Environments -> New environment* named `production`. Optionally
+  add yourself as a required reviewer to get a manual approval before each
+  deploy.
+- *Settings -> Actions -> General -> Fork pull request workflows*: require
+  approval for all outside collaborators (see the security notes below).
+- The repository must be reachable by `git fetch` from the server without a
+  password (public repo, or credentials already configured in `/opt/fpv`).
+  Your existing clone already satisfies this.
+
+### First deploy
+
+1. Run the workflow by hand first: *Actions -> CI/CD -> Run workflow* on
+   `main`, leaving **Dry run** checked. This runs the tests, builds and pushes
+   the images, and then, on the server, only performs the pre-flight checks,
+   the backup and overwrite guard, verifies the images can be pulled, and
+   prints which files would change. Nothing is modified.
+2. Run it again with **Dry run** unchecked, or just push to `main`. Watch it
+   live. The first deploy replaces the old locally-built stack with the CI
+   images and starts the new `fpv-audiobridge-bootstrap` container; Janus
+   restarts once because its config changed, so expect a short video interruption.
+3. After the first healthy deploy, `web/dist`, `web/dist.old` and
+   `web/node_modules` on the server are no longer used and can be deleted.
+
+### What a deploy does and does not touch
+
+| | |
+|---|---|
+| Replaced with the repo's version | Tracked files (compose file, nginx and Janus config, scripts, ...) |
+| Never touched | `server/.env`, git-ignored files, files that exist only on the server, Docker volumes (including the Let's Encrypt certificates) |
+| Saved before every deploy | `/opt/fpv-backups/<time>-<commit>/` with `server.env`, `local-edits.patch` (exact), `local-edits.ignoring-eol.patch` (readable) and the old commit hash. The newest 10 are kept. |
+
+If a file that exists only on the server has the same path as a file the repo
+tracks (and differs), the deploy stops before changing anything and lists it.
+
+If the health check fails (all containers running, UDP 3002 published, HTTPS
+`/health` answering, stable for 3 consecutive polls), the script restores the
+previous image tag, the previous commit and your saved local edits, and the job
+fails. The deploy log is in the *Actions* tab.
+
+### Manual runs and rollback
+
+```bash
+# Check what a deploy would do, changing nothing
+# (needs `docker login ghcr.io` with a token that can read packages)
+cd /opt/fpv
+DEPLOY_DIR=/opt/fpv TARGET_SHA=$(git rev-parse origin/main) DRY_RUN=1 \
+    IMAGE_REGISTRY=ghcr.io/gnsampayan bash server/scripts/deploy.sh
+
+# Roll back to an earlier commit: re-run the CI/CD workflow from that commit's
+# page (Actions -> the old run -> Re-run all jobs), or run deploy.sh by hand
+# with TARGET_SHA of a commit whose images still exist in GHCR.
+```
+
+Your edits from before the first deploy are in the oldest folder of
+`/opt/fpv-backups/`; to bring one back into the repo, review the
+`local-edits.ignoring-eol.patch` there.
+
+### Security notes
+
+- A self-hosted runner executes workflow code on your server, and the `docker`
+  group is effectively root. Only the `deploy` job uses it, and only for pushes
+  to `main` (or a manual run on `main`). Keep *Require approval for all outside
+  collaborators* enabled so a fork's pull request can never reach it.
+- Keep the GHCR packages private. The deploy job logs in with the workflow's
+  short-lived `GITHUB_TOKEN`, so no personal access token is stored anywhere.
+- Deploying recreates the control relay, so a live driving session reconnects
+  (the car's 250 ms deadman stops it meanwhile). Janus restarts only when its
+  config changed.
 
 ## Gotchas
 
