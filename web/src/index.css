@@ -108,6 +108,12 @@ body {
   z-index: 10;
 }
 
+/* Lets rotated children size themselves against the container using
+   cqw/cqh units (needed so a 90/270 degree rotated video still fits). */
+.video-rotation-container {
+  container-type: size;
+}
+
 /* HUD overlay styles */
 .hud-text {
   font-family: 'Orbitron', sans-serif;

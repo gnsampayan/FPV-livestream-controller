@@ -7,8 +7,47 @@ interface VideoPlayerProps {
     onConnectionChange?: (connected: boolean) => void;
 }
 
+/** Number of clockwise quarter turns applied to the video. */
+type QuarterTurns = 0 | 1 | 2 | 3;
+
+const ROTATION_STORAGE_KEY = 'fpv.videoRotation';
+
+// Full class names must appear literally so Tailwind can detect them.
+// For 90/270 degree rotations the element's box is swapped (container height
+// x container width) so that, once rotated, it exactly fills the container
+// and `object-contain` letterboxes correctly.
+const ROTATION_CLASSES: Record<QuarterTurns, string> = {
+    0: 'w-full h-full',
+    1: 'w-[100cqh] h-[100cqw] rotate-90',
+    2: 'w-full h-full rotate-180',
+    3: 'w-[100cqh] h-[100cqw] -rotate-90'
+};
+
+function isQuarterTurns(value: number): value is QuarterTurns {
+    return value === 0 || value === 1 || value === 2 || value === 3;
+}
+
+function loadStoredRotation(): QuarterTurns {
+    try {
+        const parsed = Number.parseInt(window.localStorage.getItem(ROTATION_STORAGE_KEY) ?? '', 10);
+        return isQuarterTurns(parsed) ? parsed : 0;
+    } catch {
+        // localStorage can throw (privacy mode, disabled storage); default to upright.
+        return 0;
+    }
+}
+
+function storeRotation(rotation: QuarterTurns): void {
+    try {
+        window.localStorage.setItem(ROTATION_STORAGE_KEY, String(rotation));
+    } catch {
+        // Persistence is best-effort only.
+    }
+}
+
 export function VideoPlayer({ janusServer, streamId, onConnectionChange }: VideoPlayerProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
+    const [rotation, setRotation] = useState<QuarterTurns>(loadStoredRotation);
     // Start muted so autoplay always works. The user can unmute via the
     // speaker button after the stream starts (browsers block autoplay-with-
     // sound until a user gesture).
@@ -48,15 +87,25 @@ export function VideoPlayer({ janusServer, streamId, onConnectionChange }: Video
         });
     }, []);
 
+    const rotate = useCallback((direction: 1 | -1) => {
+        setRotation((prev) => ((prev + direction + 4) % 4) as QuarterTurns);
+    }, []);
+
+    useEffect(() => {
+        storeRotation(rotation);
+    }, [rotation]);
+    const rotateClockwise = useCallback(() => rotate(1), [rotate]);
+    const rotateCounterClockwise = useCallback(() => rotate(-1), [rotate]);
+
     const isConnected = connectionState === 'connected';
     const isConnecting = connectionState === 'connecting';
 
     return (
-        <div className="video-container relative w-full h-full bg-black">
-            {/* Video element */}
+        <div className="video-container video-rotation-container relative w-full h-full bg-black">
+            {/* Video element (centered so rotation pivots around the middle) */}
             <video
                 ref={videoRef}
-                className="w-full h-full object-contain"
+                className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 object-contain ${ROTATION_CLASSES[rotation]}`}
                 autoPlay
                 playsInline
                 muted
@@ -107,6 +156,26 @@ export function VideoPlayer({ janusServer, streamId, onConnectionChange }: Video
 
                     {/* Top right - audio mute toggle + REC indicator */}
                     <div className="absolute top-3 right-3 flex items-center gap-3">
+                        <div className="flex items-center gap-1">
+                            <button
+                                type="button"
+                                onClick={rotateCounterClockwise}
+                                className="px-2 py-1 border border-fpv-border text-xs font-mono text-gray-400 hover:text-fpv-accent hover:border-fpv-accent transition-colors"
+                                title="Rotate video 90° counter-clockwise"
+                                aria-label="Rotate video 90 degrees counter-clockwise"
+                            >
+                                ↺
+                            </button>
+                            <button
+                                type="button"
+                                onClick={rotateClockwise}
+                                className="px-2 py-1 border border-fpv-border text-xs font-mono text-gray-400 hover:text-fpv-accent hover:border-fpv-accent transition-colors"
+                                title="Rotate video 90° clockwise"
+                                aria-label="Rotate video 90 degrees clockwise"
+                            >
+                                ↻
+                            </button>
+                        </div>
                         <button
                             onClick={toggleMuted}
                             className={`flex items-center gap-1.5 px-2 py-1 border text-xs font-mono transition-colors ${
