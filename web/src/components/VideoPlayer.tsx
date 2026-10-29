@@ -23,31 +23,55 @@ const ROTATION_CLASSES: Record<QuarterTurns, string> = {
     3: 'w-[100cqh] h-[100cqw] -rotate-90'
 };
 
+const MIRROR_STORAGE_KEY = 'fpv.videoMirrored';
+
+// Tailwind applies scale before rotate (scale is the innermost transform), so
+// the flip happens in the video's own axes. To always mirror left <-> right as
+// the user sees it on screen, a sideways video (90/270) must flip its local
+// vertical axis instead of its horizontal one.
+const MIRROR_HORIZONTAL_CLASS = 'scale-x-[-1]';
+const MIRROR_VERTICAL_CLASS = 'scale-y-[-1]';
+
 function isQuarterTurns(value: number): value is QuarterTurns {
     return value === 0 || value === 1 || value === 2 || value === 3;
 }
 
-function loadStoredRotation(): QuarterTurns {
+function readStorage(key: string): string | null {
     try {
-        const parsed = Number.parseInt(window.localStorage.getItem(ROTATION_STORAGE_KEY) ?? '', 10);
-        return isQuarterTurns(parsed) ? parsed : 0;
+        return window.localStorage.getItem(key);
     } catch {
-        // localStorage can throw (privacy mode, disabled storage); default to upright.
-        return 0;
+        // localStorage can throw (privacy mode, disabled storage).
+        return null;
     }
 }
 
-function storeRotation(rotation: QuarterTurns): void {
+function writeStorage(key: string, value: string): void {
     try {
-        window.localStorage.setItem(ROTATION_STORAGE_KEY, String(rotation));
+        window.localStorage.setItem(key, value);
     } catch {
         // Persistence is best-effort only.
     }
 }
 
+function loadStoredRotation(): QuarterTurns {
+    const parsed = Number.parseInt(readStorage(ROTATION_STORAGE_KEY) ?? '', 10);
+    return isQuarterTurns(parsed) ? parsed : 0;
+}
+
+function loadStoredMirrored(): boolean {
+    return readStorage(MIRROR_STORAGE_KEY) === 'true';
+}
+
+function getMirrorClass(rotation: QuarterTurns, mirrored: boolean): string {
+    if (!mirrored) return '';
+    const isSideways = rotation === 1 || rotation === 3;
+    return isSideways ? MIRROR_VERTICAL_CLASS : MIRROR_HORIZONTAL_CLASS;
+}
+
 export function VideoPlayer({ janusServer, streamId, onConnectionChange }: VideoPlayerProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const [rotation, setRotation] = useState<QuarterTurns>(loadStoredRotation);
+    const [mirrored, setMirrored] = useState<boolean>(loadStoredMirrored);
     // Start muted so autoplay always works. The user can unmute via the
     // speaker button after the stream starts (browsers block autoplay-with-
     // sound until a user gesture).
@@ -91,11 +115,17 @@ export function VideoPlayer({ janusServer, streamId, onConnectionChange }: Video
         setRotation((prev) => ((prev + direction + 4) % 4) as QuarterTurns);
     }, []);
 
-    useEffect(() => {
-        storeRotation(rotation);
-    }, [rotation]);
     const rotateClockwise = useCallback(() => rotate(1), [rotate]);
     const rotateCounterClockwise = useCallback(() => rotate(-1), [rotate]);
+    const toggleMirrored = useCallback(() => setMirrored((prev) => !prev), []);
+
+    useEffect(() => {
+        writeStorage(ROTATION_STORAGE_KEY, String(rotation));
+    }, [rotation]);
+
+    useEffect(() => {
+        writeStorage(MIRROR_STORAGE_KEY, String(mirrored));
+    }, [mirrored]);
 
     const isConnected = connectionState === 'connected';
     const isConnecting = connectionState === 'connecting';
@@ -105,7 +135,7 @@ export function VideoPlayer({ janusServer, streamId, onConnectionChange }: Video
             {/* Video element (centered so rotation pivots around the middle) */}
             <video
                 ref={videoRef}
-                className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 object-contain ${ROTATION_CLASSES[rotation]}`}
+                className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 object-contain ${ROTATION_CLASSES[rotation]} ${getMirrorClass(rotation, mirrored)}`}
                 autoPlay
                 playsInline
                 muted
@@ -174,6 +204,20 @@ export function VideoPlayer({ janusServer, streamId, onConnectionChange }: Video
                                 aria-label="Rotate video 90 degrees clockwise"
                             >
                                 ↻
+                            </button>
+                            <button
+                                type="button"
+                                onClick={toggleMirrored}
+                                aria-pressed={mirrored}
+                                className={`px-2 py-1 border text-xs font-mono transition-colors ${
+                                    mirrored
+                                        ? 'border-fpv-accent text-fpv-accent'
+                                        : 'border-fpv-border text-gray-400 hover:text-fpv-accent hover:border-fpv-accent'
+                                }`}
+                                title={mirrored ? 'Disable video mirroring' : 'Mirror video horizontally'}
+                                aria-label={mirrored ? 'Disable video mirroring' : 'Mirror video horizontally'}
+                            >
+                                ⇋
                             </button>
                         </div>
                         <button
