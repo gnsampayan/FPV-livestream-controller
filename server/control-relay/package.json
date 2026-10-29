@@ -1,12 +1,13 @@
 {
 	"name": "fpv-control-relay",
-	"version": "1.0.0",
-	"description": "WebSocket relay service for FPV RC car control",
+	"version": "1.1.0",
+	"description": "WebSocket-to-UDP relay service for FPV RC car control",
 	"main": "dist/index.js",
 	"scripts": {
 		"build": "tsc",
 		"start": "node dist/index.js",
 		"dev": "ts-node src/index.ts",
+		"test": "tsc && node --test dist/udpProtocol.test.js",
 		"lint": "eslint src/**/*.ts"
 	},
 	"dependencies": {

@@ -1,0 +1,4 @@
+# Development / test dependencies. Run tests from this directory with:
+#   python -m pytest tests
+-r requirements.txt
+pytest>=7.0

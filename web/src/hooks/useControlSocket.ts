@@ -8,6 +8,10 @@ import type {
   ConnectionState 
 } from '../types';
 
+// A control message is ~100 bytes; more than a few queued means the uplink
+// cannot keep up and new commands should replace, not extend, the backlog.
+const MAX_BUFFERED_BYTES = 512;
+
 interface UseControlSocketOptions {
   url: string;
   token: string;
@@ -25,7 +29,9 @@ interface UseControlSocketReturn {
     throttle: number,
     brake?: number,
     camYaw?: number,
-    camPitch?: number
+    camPitch?: number,
+    /** Bypass the backlog guard. Use for safety commands (e.g. stop). */
+    force?: boolean
   ) => void;
   connect: () => void;
   disconnect: () => void;
@@ -162,9 +168,20 @@ export function useControlSocket({
     throttle: number,
     brake?: number,
     camYaw?: number,
-    camPitch?: number
+    camPitch?: number,
+    force = false
   ) => {
-    if (wsRef.current?.readyState !== WebSocket.OPEN) {
+    const socket = wsRef.current;
+    if (socket?.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    // Latest state wins: if earlier commands are still queued in the socket
+    // (slow uplink), skip this one instead of piling more behind them. The
+    // next tick carries fresher input, and a deep queue would otherwise be
+    // delivered late as a burst of stale steering. Safety commands (force)
+    // are always sent.
+    if (!force && socket.bufferedAmount > MAX_BUFFERED_BYTES) {
       return;
     }
 
@@ -178,7 +195,7 @@ export function useControlSocket({
       camPitch: camPitch !== undefined ? Math.max(-1, Math.min(1, camPitch)) : undefined,
     };
 
-    wsRef.current.send(JSON.stringify(command));
+    socket.send(JSON.stringify(command));
   }, []);
 
   // Cleanup on unmount

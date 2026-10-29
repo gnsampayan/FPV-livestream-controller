@@ -45,11 +45,12 @@ services:
     container_name: fpv-control-relay
     restart: unless-stopped
     ports:
-      - "3001:3001"
+      - "3001:3001"        # browser WebSocket (behind nginx /ws/control)
+      - "3002:3002/udp"    # Pi control link (binary UDP, HMAC-authenticated)
     environment:
       - NODE_ENV=production
       - AUTH_TOKEN=${CONTROL_AUTH_TOKEN:-changeme}
-      - PI_RECONNECT_INTERVAL=5000
+      - UDP_PORT=3002
     networks:
       - fpv-network
 

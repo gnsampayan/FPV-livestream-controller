@@ -10,7 +10,10 @@ general: {
     events_folder = "/usr/local/lib/janus/events"
     loggers_folder = "/usr/local/lib/janus/loggers"
     
-    debug_level = 4
+    # 2 = errors + warnings. Level 4 (info) logs per-session/ICE chatter and
+    # level 5+ logs per-packet events; at video frame rates that is real CPU
+    # and disk I/O on the media path. Raise temporarily when debugging.
+    debug_level = 2
     debug_timestamps = true
     debug_colors = true
     
@@ -33,6 +36,10 @@ media: {
     
     # RTP port range for WebRTC
     rtp_port_range = "10000-10050"
+
+    # Avoid retransmitting the same lost packet several times for repeated
+    # NACKs from the browser; saves uplink bandwidth on a lossy last mile.
+    nack_optimizations = true
     
     # DSCP for QoS
     # dscp_audio_rtp = 46

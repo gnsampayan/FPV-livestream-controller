@@ -1,0 +1,25 @@
+[Unit]
+Description=FPV optional thermal/power bitrate governor
+# Not enabled by setup.sh. Enable with:
+#   sudo systemctl enable --now fpv-bitrate-governor
+After=fpv-video.service
+Wants=fpv-video.service
+
+[Service]
+Type=simple
+Environment="ENCODER_DEVICE=/dev/video11"
+Environment="REDUCE_PERCENT=60"
+ExecStart=/usr/local/bin/fpv-bitrate-governor.sh
+Restart=on-failure
+RestartSec=5
+
+# Runs on the housekeeping core, never competing with control/audio/video.
+CPUAffinity=0
+Nice=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fpv-bitrate-governor
+
+[Install]
+WantedBy=multi-user.target

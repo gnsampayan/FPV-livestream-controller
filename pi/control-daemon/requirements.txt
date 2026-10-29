@@ -1,3 +1,2 @@
-# FPV Control Daemon Dependencies
-websocket-client>=1.7.0
+# FPV Control Daemon Dependencies (runtime)
 pyserial>=3.5

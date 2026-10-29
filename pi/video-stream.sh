@@ -1,42 +1,72 @@
 #!/bin/bash
-# FPV Video Streaming Script for Raspberry Pi 3 with OV5647 Camera.
+# FPV Video Streaming Script for Raspberry Pi 3 B v1.2 (OV5647 camera).
 #
-# Starts a GStreamer pipeline that encodes the camera feed as H.264 and
-# forwards RTP packets to the Janus WebRTC gateway on the home server.
+# Pipeline:
 #
-# Defaults are tuned for the Pi 3 v1.2 (software x264) on LTE uplinks:
-#   - 854x480 @ 25fps, 700 kbps CBR  (was 960x540 @ 1 Mbps; the lower profile
-#     leaves CPU headroom for the audio TX/RX pipelines that now run alongside
-#     this service on the same Pi)
-#   - MTU 1200 on RTP packets to stay under typical cellular MTU
-#   - Keyframe every 25 frames (~1s) for fast loss recovery on cellular
+#   camera -> ISP -> VideoCore IV hardware H.264 encoder -> stdout
+#          -> GStreamer (h264parse -> RTP payloader -> UDP) -> Janus
 #
-# Override any knob via environment (see the systemd unit).
+# The Pi 3's VideoCore IV encodes H.264 in dedicated silicon, so the four
+# Cortex-A53 cores stay free for audio, control and the network stack. The
+# GStreamer tail only repacketizes already-encoded frames, which costs a few
+# percent of one core.
+#
+# Capture stacks (CAMERA_STACK):
+#   rpicam   - rpicam-vid (Bookworm) or libcamera-vid (Bullseye). Preferred.
+#   raspivid - legacy firmware camera stack (needs start_x=1 in config.txt).
+#   software - GStreamer + x264enc on the CPU. Last resort; high CPU.
+#   auto     - first of the above that is installed.
+#
+# Latency notes:
+#   - Higher framerate lowers capture-to-encode delay by itself: a frame
+#     interval is 16.7 ms at 60 fps versus 33 ms at 30 fps.
+#   - --flush makes the encoder write each frame to the pipe immediately
+#     instead of waiting for a full buffer.
+#   - --inline repeats SPS/PPS on every keyframe so new viewers can decode
+#     as soon as the next keyframe arrives (KEYFRAME_INTERVAL frames).
+#   - RTP MTU 1200 stays under typical cellular MTU (no fragmentation).
+#
+# Every knob can be overridden from the environment (see fpv.env.example).
 
-set -e
+set -eu
+set -o pipefail
 
-JANUS_HOST="${JANUS_HOST:-100.x.x.x}"         # Tailscale IP of your server
+JANUS_HOST="${JANUS_HOST:-100.x.x.x}"           # Tailscale IP of your server
 JANUS_PORT="${JANUS_PORT:-5004}"
 
-WIDTH="${VIDEO_WIDTH:-854}"
-HEIGHT="${VIDEO_HEIGHT:-480}"
-FRAMERATE="${VIDEO_FRAMERATE:-25}"
-BITRATE="${VIDEO_BITRATE:-700000}"            # 700 kbps CBR
-KEYFRAME_INTERVAL="${KEYFRAME_INTERVAL:-25}"  # I-frame every ~1s
-MTU="${RTP_MTU:-1200}"                        # cellular-safe
-UDP_BUFFER="${UDP_BUFFER:-65536}"
+# ---------------------------------------------------------------------------
+# Presets (width, height, framerate, bitrate, keyframe interval in frames)
+# ---------------------------------------------------------------------------
+VIDEO_PRESET="${VIDEO_PRESET:-latency}"
 
-CAMERA_STACK="${CAMERA_STACK:-auto}"          # auto | libcamera | v4l2 | software
-# Which stack to pick for your board:
-#   libcamera - hardware H.264 encode via v4l2h264enc. Known broken on Pi 3
-#               with current bcm2835-codec driver: pipeline reaches PLAYING
-#               but emits zero RTP packets (silent stall). Prefer on Pi 4/5.
-#   software  - libcamera source + software x264enc. Works on Pi 3 today but
-#               pins one CPU core. Current recommended default for Pi 3
-#               until the hardware encoder regression is fixed.
-#   v4l2      - legacy /dev/video0 shim. Avoid on modern Pi OS; fails with
-#               "Buffer pool activation failed" on Pi 3 due to small CMA pool.
-#   auto      - picks libcamera if available, else falls through.
+case "${VIDEO_PRESET}" in
+    latency)  PRESET_WIDTH=640;  PRESET_HEIGHT=480;  PRESET_FPS=60; PRESET_BITRATE=1200000; PRESET_GOP=30 ;;
+    balanced) PRESET_WIDTH=1280; PRESET_HEIGHT=720;  PRESET_FPS=30; PRESET_BITRATE=2000000; PRESET_GOP=30 ;;
+    quality)  PRESET_WIDTH=1920; PRESET_HEIGHT=1080; PRESET_FPS=30; PRESET_BITRATE=3500000; PRESET_GOP=30 ;;
+    *)
+        echo "ERROR: Unknown VIDEO_PRESET='${VIDEO_PRESET}' (use latency|balanced|quality)" >&2
+        exit 1
+        ;;
+esac
+
+WIDTH="${VIDEO_WIDTH:-${PRESET_WIDTH}}"
+HEIGHT="${VIDEO_HEIGHT:-${PRESET_HEIGHT}}"
+FRAMERATE="${VIDEO_FRAMERATE:-${PRESET_FPS}}"
+BITRATE="${VIDEO_BITRATE:-${PRESET_BITRATE}}"
+KEYFRAME_INTERVAL="${KEYFRAME_INTERVAL:-${PRESET_GOP}}"
+H264_LEVEL="${VIDEO_H264_LEVEL:-4}"
+
+EXPOSURE="${VIDEO_EXPOSURE:-sport}"
+AWB="${VIDEO_AWB:-auto}"
+SHUTTER_US="${VIDEO_SHUTTER_US:-}"
+SENSOR_MODE="${VIDEO_SENSOR_MODE:-}"
+EXTRA_ARGS="${VIDEO_EXTRA_ARGS:-}"
+
+MTU="${RTP_MTU:-1200}"                           # cellular-safe
+UDP_BUFFER="${UDP_BUFFER:-65536}"
+VIDEO_DSCP="${VIDEO_DSCP:-26}"                   # AF31
+
+CAMERA_STACK="${CAMERA_STACK:-auto}"
 
 # Silence GStreamer's debug channel unless the operator explicitly asked for it.
 export GST_DEBUG="${GST_DEBUG:-0}"
@@ -45,109 +75,163 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
 }
 
-log "Starting FPV video stream"
-log "Target:     ${JANUS_HOST}:${JANUS_PORT} (RTP/UDP, mtu=${MTU})"
-log "Resolution: ${WIDTH}x${HEIGHT}@${FRAMERATE}fps"
-log "Bitrate:    ${BITRATE} bps CBR, GOP=${KEYFRAME_INTERVAL}"
-log "Stack:      ${CAMERA_STACK}"
+have() {
+    command -v "$1" >/dev/null 2>&1
+}
 
-if ! command -v gst-launch-1.0 >/dev/null 2>&1; then
+if ! have gst-launch-1.0; then
     log "ERROR: GStreamer not found. Install with:"
     log "  sudo apt install gstreamer1.0-tools gstreamer1.0-plugins-{base,good,bad}"
     exit 1
 fi
 
-# Auto-pick the best camera source for this OS if not overridden.
+# ---------------------------------------------------------------------------
+# Stack selection
+# ---------------------------------------------------------------------------
+RPICAM_BIN=""
+if have rpicam-vid; then
+    RPICAM_BIN="rpicam-vid"
+elif have libcamera-vid; then
+    RPICAM_BIN="libcamera-vid"
+fi
+
 if [ "${CAMERA_STACK}" = "auto" ]; then
-    if command -v libcamera-hello >/dev/null 2>&1 \
-       || gst-inspect-1.0 libcamerasrc >/dev/null 2>&1; then
-        CAMERA_STACK="libcamera"
-    elif [ -e /dev/video0 ]; then
-        CAMERA_STACK="v4l2"
+    if [ -n "${RPICAM_BIN}" ]; then
+        CAMERA_STACK="rpicam"
+    elif have raspivid; then
+        CAMERA_STACK="raspivid"
     else
-        log "Loading bcm2835-v4l2 camera module..."
-        sudo modprobe bcm2835-v4l2 || true
-        sleep 1
-        if [ -e /dev/video0 ]; then
-            CAMERA_STACK="v4l2"
-        else
-            log "ERROR: No camera source found (no libcamerasrc and no /dev/video0)."
-            exit 1
-        fi
+        CAMERA_STACK="software"
     fi
     log "Auto-selected camera stack: ${CAMERA_STACK}"
 fi
 
-# Common encoder/payloader tail used by every pipeline.
-ENC_CONTROLS="controls,video_bitrate_mode=1,video_bitrate=${BITRATE},h264_i_frame_period=${KEYFRAME_INTERVAL}"
+log "Starting FPV video stream"
+log "Target:     ${JANUS_HOST}:${JANUS_PORT} (RTP/UDP, mtu=${MTU}, dscp=${VIDEO_DSCP})"
+log "Preset:     ${VIDEO_PRESET}"
+log "Video:      ${WIDTH}x${HEIGHT}@${FRAMERATE}fps, ${BITRATE} bps, GOP=${KEYFRAME_INTERVAL}"
+log "Stack:      ${CAMERA_STACK}"
 
-run_libcamera() {
-    log "Using libcamera stack"
-    exec gst-launch-1.0 -v \
-        libcamerasrc \
-            ! "video/x-raw,width=${WIDTH},height=${HEIGHT},framerate=${FRAMERATE}/1" \
-        ! queue max-size-buffers=1 leaky=downstream \
-        ! videoconvert \
-        ! queue max-size-buffers=1 leaky=downstream \
-        ! v4l2h264enc extra-controls="${ENC_CONTROLS}" \
-        ! "video/x-h264,level=(string)4,profile=baseline" \
-        ! h264parse config-interval=1 \
-        ! rtph264pay pt=96 config-interval=1 mtu=${MTU} \
+# ---------------------------------------------------------------------------
+# Shared RTP tail: raw Annex-B H.264 on stdin -> RTP/UDP to Janus.
+# ---------------------------------------------------------------------------
+run_rtp_tail() {
+    gst-launch-1.0 -q \
+        fdsrc fd=0 do-timestamp=true \
+        ! h264parse \
+        ! rtph264pay pt=96 config-interval=1 aggregate-mode=zero-latency mtu="${MTU}" \
         ! udpsink host="${JANUS_HOST}" port="${JANUS_PORT}" \
-                  sync=false async=false buffer-size=${UDP_BUFFER}
+                  sync=false async=false buffer-size="${UDP_BUFFER}" \
+                  qos-dscp="${VIDEO_DSCP}"
 }
 
-run_v4l2() {
-    log "Using legacy V4L2 camera stack (/dev/video0)"
-    exec gst-launch-1.0 -v \
-        v4l2src device=/dev/video0 \
-            ! "video/x-raw,width=${WIDTH},height=${HEIGHT},framerate=${FRAMERATE}/1" \
-        ! queue max-size-buffers=1 leaky=downstream \
-        ! videoconvert \
-        ! queue max-size-buffers=1 leaky=downstream \
-        ! v4l2h264enc extra-controls="${ENC_CONTROLS}" \
-        ! "video/x-h264,level=(string)4,profile=baseline" \
-        ! h264parse config-interval=1 \
-        ! rtph264pay pt=96 config-interval=1 mtu=${MTU} \
-        ! udpsink host="${JANUS_HOST}" port="${JANUS_PORT}" \
-                  sync=false async=false buffer-size=${UDP_BUFFER}
+# ---------------------------------------------------------------------------
+# Capture stacks
+# ---------------------------------------------------------------------------
+run_rpicam() {
+    if [ -z "${RPICAM_BIN}" ]; then
+        log "ERROR: rpicam-vid / libcamera-vid not found. Install with: sudo apt install rpicam-apps"
+        exit 1
+    fi
+
+    log "Using ${RPICAM_BIN} (hardware H.264 encoder)"
+
+    local -a args=(
+        --timeout 0
+        --nopreview
+        --codec h264
+        --profile baseline
+        --level "${H264_LEVEL}"
+        --inline
+        --flush
+        --width "${WIDTH}"
+        --height "${HEIGHT}"
+        --framerate "${FRAMERATE}"
+        --bitrate "${BITRATE}"
+        --intra "${KEYFRAME_INTERVAL}"
+        --denoise off
+        --exposure "${EXPOSURE}"
+        --awb "${AWB}"
+    )
+
+    if [ -n "${SHUTTER_US}" ]; then
+        args+=(--shutter "${SHUTTER_US}")
+    fi
+    if [ -n "${SENSOR_MODE}" ]; then
+        args+=(--mode "${SENSOR_MODE}")
+    fi
+    if [ -n "${EXTRA_ARGS}" ]; then
+        # Intentional word splitting: operator-supplied raw arguments.
+        # shellcheck disable=SC2206
+        args+=(${EXTRA_ARGS})
+    fi
+    args+=(--output -)
+
+    "${RPICAM_BIN}" "${args[@]}" | run_rtp_tail
+}
+
+run_raspivid() {
+    if ! have raspivid; then
+        log "ERROR: raspivid not found (legacy camera stack is not installed)."
+        exit 1
+    fi
+
+    log "Using raspivid (legacy firmware camera stack, hardware H.264 encoder)"
+
+    raspivid \
+        --timeout 0 \
+        --nopreview \
+        --width "${WIDTH}" \
+        --height "${HEIGHT}" \
+        --framerate "${FRAMERATE}" \
+        --bitrate "${BITRATE}" \
+        --intra "${KEYFRAME_INTERVAL}" \
+        --profile baseline \
+        --level "${H264_LEVEL}" \
+        --inline \
+        --flush \
+        --exposure sports \
+        --awb "${AWB}" \
+        --output - \
+        | run_rtp_tail
 }
 
 run_software() {
-    # We source frames from libcamerasrc (NOT v4l2src) even in the "software
-    # fallback" path, because on current Raspberry Pi OS (Bullseye/Bookworm)
-    # the legacy V4L2 shim (/dev/video0 via bcm2835-v4l2) has an undersized
-    # CMA/contig memory pool. At 960x540 YUY2 @ 25fps v4l2src dies with
-    # `Failed to allocate required memory. Buffer pool activation failed`
-    # the moment the pipeline tries to go PLAYING. libcamerasrc uses
-    # dma-buf and sidesteps the issue entirely.
-    #
-    # The "software" part of this function refers to the ENCODER (x264enc),
-    # which is what matters for Pi 3 boards where v4l2h264enc silently
-    # stalls on the bcm2835-codec driver's current control set.
-    log "Using libcamera source + software x264 encoder (fallback, high CPU)"
-    exec gst-launch-1.0 -v \
-        libcamerasrc \
+    log "Using GStreamer + x264enc (software encoder, high CPU)"
+
+    local -a camera_src
+    if gst-inspect-1.0 libcamerasrc >/dev/null 2>&1; then
+        camera_src=(libcamerasrc)
+    elif [ -e /dev/video0 ]; then
+        camera_src=(v4l2src device=/dev/video0)
+    else
+        log "ERROR: No camera source found (no libcamerasrc and no /dev/video0)."
+        exit 1
+    fi
+
+    gst-launch-1.0 -q \
+        "${camera_src[@]}" \
             ! "video/x-raw,width=${WIDTH},height=${HEIGHT},framerate=${FRAMERATE}/1" \
         ! queue max-size-buffers=1 leaky=downstream \
         ! videoconvert \
         ! x264enc tune=zerolatency speed-preset=ultrafast \
                   bitrate=$((BITRATE / 1000)) \
-                  key-int-max=${KEYFRAME_INTERVAL} \
-                  threads=4 \
+                  key-int-max="${KEYFRAME_INTERVAL}" \
+                  threads=2 sliced-threads=true \
         ! "video/x-h264,profile=baseline" \
         ! h264parse config-interval=1 \
-        ! rtph264pay pt=96 config-interval=1 mtu=${MTU} \
+        ! rtph264pay pt=96 config-interval=1 aggregate-mode=zero-latency mtu="${MTU}" \
         ! udpsink host="${JANUS_HOST}" port="${JANUS_PORT}" \
-                  sync=false async=false buffer-size=${UDP_BUFFER}
+                  sync=false async=false buffer-size="${UDP_BUFFER}" \
+                  qos-dscp="${VIDEO_DSCP}"
 }
 
 case "${CAMERA_STACK}" in
-    libcamera) run_libcamera ;;
-    v4l2)     run_v4l2 ;;
+    rpicam)   run_rpicam ;;
+    raspivid) run_raspivid ;;
     software) run_software ;;
     *)
-        log "ERROR: Unknown CAMERA_STACK=${CAMERA_STACK} (use auto|libcamera|v4l2|software)"
+        log "ERROR: Unknown CAMERA_STACK=${CAMERA_STACK} (use auto|rpicam|raspivid|software)"
         exit 1
         ;;
 esac

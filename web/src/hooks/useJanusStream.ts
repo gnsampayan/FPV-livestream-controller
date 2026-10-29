@@ -22,6 +22,8 @@ interface JanusSession {
 }
 
 interface JanusPluginHandle {
+  // Internal state exposed by janus.js; we only read the peer connection.
+  webrtcStuff?: { pc?: RTCPeerConnection | null };
   send: (params: { message: Record<string, unknown>; jsep?: RTCSessionDescriptionInit }) => void;
   createAnswer: (params: {
     jsep: RTCSessionDescriptionInit;
@@ -38,6 +40,55 @@ interface JanusMessage {
     status?: string;
   };
   error?: string;
+}
+
+// Playout hints supported by Chromium-based browsers. Not in every lib.dom
+// version, and absent entirely in some browsers, so they are optional here.
+type LowLatencyReceiver = RTCRtpReceiver & {
+  jitterBufferTarget?: number | null;
+  playoutDelayHint?: number | null;
+};
+
+// Target jitter-buffer depth in ms. Video is allowed to render as soon as a
+// frame is complete. Audio keeps a small cushion: a zero-length buffer makes
+// speech crackle on the first late packet.
+const VIDEO_JITTER_TARGET_MS = 0;
+const AUDIO_JITTER_TARGET_MS = 20;
+
+/**
+ * Ask the browser to keep its receive-side buffering as small as possible for
+ * this track. By default Chrome buffers ~100-300 ms of video for smoothness,
+ * which is pure added latency for an FPV feed. Safe no-op where unsupported.
+ */
+function requestMinimalPlayoutDelay(
+  peerConnection: RTCPeerConnection | null | undefined,
+  track: MediaStreamTrack
+): void {
+  if (!peerConnection) {
+    return;
+  }
+
+  const receiver = peerConnection
+    .getReceivers()
+    .find((candidate) => candidate.track === track) as LowLatencyReceiver | undefined;
+  if (!receiver) {
+    return;
+  }
+
+  const targetMs = track.kind === 'video' ? VIDEO_JITTER_TARGET_MS : AUDIO_JITTER_TARGET_MS;
+  const targetSeconds = targetMs / 1000;
+
+  try {
+    receiver.jitterBufferTarget = targetMs;
+  } catch (e) {
+    console.warn('[Janus] jitterBufferTarget not supported:', e);
+  }
+  try {
+    // Older Chromium name for the same hint, expressed in seconds.
+    receiver.playoutDelayHint = targetSeconds;
+  } catch (e) {
+    console.warn('[Janus] playoutDelayHint not supported:', e);
+  }
 }
 
 // Declare Janus as a global
@@ -147,7 +198,9 @@ export function useJanusStream({
               setConnectionState('error');
             },
             onmessage: (msg, jsep) => {
-              console.log('[Janus] Message:', msg);
+              if (import.meta.env.DEV) {
+                console.log('[Janus] Message:', msg);
+              }
 
               if (msg.error) {
                 setError(msg.error);
@@ -199,6 +252,8 @@ export function useJanusStream({
               }
               streamRef.current.addTrack(track);
 
+              requestMinimalPlayoutDelay(pluginRef.current?.webrtcStuff?.pc, track);
+
               if (videoRef.current) {
                 videoRef.current.srcObject = streamRef.current;
                 videoRef.current.play().then(() => {
@@ -233,7 +288,9 @@ export function useJanusStream({
 
     if (!initedRef.current) {
       window.Janus.init({
-        debug: 'all',
+        // Janus.js logs every message when debug is on; that is useful in
+        // development but costs measurable time per frame in production.
+        debug: import.meta.env.DEV ? 'all' : false,
         callback: () => {
           initedRef.current = true;
           if (window.Janus.isWebrtcSupported()) {

@@ -187,7 +187,7 @@ function App() {
 
             if (!visible) {
                 // Tab hidden - send a full neutral command (drive + camera).
-                sendControl(0, 0, 0, 0, 0);
+                sendControl(0, 0, 0, 0, 0, true);
             }
         };
 
@@ -344,7 +344,12 @@ function App() {
             <footer className="flex-shrink-0 px-4 py-2 border-t border-fpv-border bg-fpv-panel">
                 <div className="flex items-center justify-between text-xs text-gray-500">
                     <div className="flex items-center gap-4">
-                        <span>Latency: {telemetry ? `~${Date.now() - telemetry.timestamp}ms` : '--'}</span>
+                        <span>
+                            Control RTT:{' '}
+                            {telemetry?.rttMs !== undefined && telemetry.rttMs !== null
+                                ? `${telemetry.rttMs} ms`
+                                : '--'}
+                        </span>
                     </div>
                     <div>
                         <span className="hud-text text-[10px]">FPV STREAMING SYSTEM v1.0</span>

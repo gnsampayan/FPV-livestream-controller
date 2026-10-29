@@ -20,7 +20,7 @@ export interface ArduinoLink {
 export interface AuthMessage {
   type: 'auth';
   token: string;
-  clientType: 'browser' | 'pi';
+  clientType: 'browser';
 }
 
 // Status update from server
@@ -37,9 +37,25 @@ export interface TelemetryMessage {
   timestamp: number;
   cpuTemp?: number;
   battery?: number;
+  /** Pi Wi-Fi signal level in dBm (absent when the Pi is on LTE/Ethernet). */
   rssi?: number;
+  /** Relay <-> Pi round-trip time in ms; null until the first echo arrives. */
+  rttMs?: number | null;
+  /** Raspberry Pi firmware throttle bitfield (see THROTTLE_* masks). */
+  throttledFlags?: number;
   arduino?: ArduinoLink;
 }
+
+// Bits of TelemetryMessage.throttledFlags ("vcgencmd get_throttled").
+export const THROTTLE_UNDERVOLTAGE_NOW = 0x1;
+export const THROTTLE_FREQ_CAPPED_NOW = 0x2;
+export const THROTTLE_THROTTLED_NOW = 0x4;
+export const THROTTLE_SOFT_TEMP_LIMIT_NOW = 0x8;
+export const THROTTLE_ACTIVE_MASK =
+  THROTTLE_UNDERVOLTAGE_NOW |
+  THROTTLE_FREQ_CAPPED_NOW |
+  THROTTLE_THROTTLED_NOW |
+  THROTTLE_SOFT_TEMP_LIMIT_NOW;
 
 // Error message
 export interface ErrorMessage {

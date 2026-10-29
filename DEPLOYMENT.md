@@ -17,6 +17,8 @@ the terminal by hand once setup is done.
 - [Step 7 - Verify it is running](#step-7---verify-it-is-running)
 - [When do I need to run something manually?](#when-do-i-need-to-run-something-manually)
 - [Command cheat sheet](#command-cheat-sheet)
+- [Measuring latency](#measuring-latency)
+- [Soak test](#soak-test)
 - [Gotchas](#gotchas)
 
 ## Before you touch the Pi
@@ -65,45 +67,58 @@ sudo ./setup.sh
 
 See [`pi/setup.sh`](pi/setup.sh). It:
 
-- Installs GStreamer, `python3-serial`, `pyserial`, `websocket-client`,
-  `usb-modeswitch`, NetworkManager, ModemManager.
-- Adds the `pi` user to the `dialout` group so the daemon can open
-  `/dev/fpv-arduino`.
-- Enables the Pi camera in `/boot/firmware/config.txt` (or
-  `/boot/config.txt` on older OS).
+- Installs `rpicam-apps` (hardware H.264 encoder), GStreamer, `python3-serial`,
+  `usb-modeswitch`, NetworkManager and `iw`. (ModemManager is deliberately not
+  installed: the HiLink dongle does not need it.)
+- Adds the `pi` user to the `dialout` and `audio` groups.
+- Configures `/boot/firmware/config.txt` (or `/boot/config.txt` on older OS)
+  for the libcamera stack: `dtoverlay=ov5647`, `gpu_mem=128`,
+  `dtoverlay=disable-bt`, and it disables a legacy `start_x=1` line, which
+  conflicts with libcamera. Set `FPV_CAMERA_OVERLAY=` (empty) for v2/v3/HQ
+  cameras to use auto-detect instead.
+- Applies system tuning: kernel tunables, RAM-only journald, swap off, the
+  `sch_cake` module, unused services disabled, `fpv-tune.service` at boot
+  (performance governor, USB autosuspend off, Wi-Fi power save off, HDMI off).
 - Installs the udev rule that creates the stable `/dev/fpv-arduino` symlink
   for the Nano.
 - Copies the LTE and WiFi NetworkManager profiles into
-  `/etc/NetworkManager/system-connections/`.
-- Installs the systemd units: `fpv-video.service`, `fpv-control.service`,
-  and `fpv-net-watchdog.timer`.
+  `/etc/NetworkManager/system-connections/` (existing profiles are kept) and
+  installs the CAKE/DSCP dispatcher script plus `/etc/default/fpv-network`.
+- Installs the systemd units: `fpv-video`, `fpv-control`, `fpv-audio-tx`,
+  `fpv-audio-rx`, `fpv-tune`, `fpv-link-manager` (replaces the old
+  `fpv-net-watchdog.timer`), and the optional `fpv-bitrate-governor`.
+- Detects USB audio devices and stores stable ALSA card ids in `fpv.env`.
 
-## Step 3 - Edit the two config values that matter
+Useful environment variables: `FPV_WIFI_COUNTRY=US` (regulatory domain),
+`FPV_SKIP_UPGRADE=1` (skip the slow `apt upgrade`).
 
-The services ship with placeholder values you must change.
+## Step 3 - Edit the config values that matter
 
-### Control service
-
-```bash
-sudo systemctl edit --full fpv-control.service
-```
-
-Change:
-
-- `CONTROL_SERVER=ws://100.x.x.x:3001` to your home server's Tailscale IP.
-- `AUTH_TOKEN=changeme` to the token you set on the server.
-
-Save and exit (Ctrl+X, Y, Enter in nano).
-
-### Video service
+All Pi settings live in one file that every FPV service loads:
 
 ```bash
-sudo systemctl edit --full fpv-video.service
+nano ~/fpv/fpv.env
 ```
 
-Change:
+Set:
 
-- `JANUS_HOST=100.x.x.x` to your server's Tailscale IP.
+- `JANUS_HOST` and `CONTROL_RELAY_HOST` to your home server's Tailscale IP.
+- `CONTROL_RELAY_PORT` if you changed `UDP_PORT` on the server (default `3002`).
+- `AUTH_TOKEN` to the token you set as `CONTROL_AUTH_TOKEN` on the server.
+- `VIDEO_PRESET` to `latency`, `balanced` or `quality`.
+
+Then reload: `sudo systemctl daemon-reload`.
+
+### Traffic shaping
+
+```bash
+sudo nano /etc/default/fpv-network
+```
+
+Set `FPV_LTE_UPLINK_KBIT` and `FPV_WIFI_UPLINK_KBIT` to roughly 85-90% of your
+measured uplink speed. This is what keeps control and audio latency low when the
+video briefly exceeds the real uplink rate. Re-apply by replugging the dongle or
+`sudo nmcli con down lte-usb && sudo nmcli con up lte-usb`.
 
 ### WiFi fallback (optional, for bench testing)
 
@@ -131,7 +146,7 @@ tailscale ip -4   # write this 100.x.x.x IP down - you need it in Step 3 above
 ```
 
 Follow the URL it prints to authenticate. The 100.x.x.x address it prints
-is what goes into `CONTROL_SERVER` and `JANUS_HOST` on the Pi.
+is what goes into `CONTROL_RELAY_HOST` and `JANUS_HOST` on the Pi.
 
 ### On the Pi
 
@@ -145,8 +160,24 @@ Once both ends are up, verify from the Pi:
 ```bash
 tailscale status
 tailscale ping <server-tailscale-ip>
-nc -zv  <server-tailscale-ip> 3001   # control-relay reachable?
 ```
+
+The control link is UDP (port 3002), so `nc -zv` is not a reliable test. The
+real check is the daemon log in Step 7: once the relay answers, the browser
+shows "PI" connected and a control RTT.
+
+### Tailscale vs kernel WireGuard (optional)
+
+On a Pi 3, Tailscale runs WireGuard in userspace and spends CPU on every
+packet. To see whether that matters for your stream, run the benchmark once per
+VPN (server: `iperf3 -s`, Pi: below) and compare loss, jitter and CPU:
+
+```bash
+~/fpv/scripts/fpv-vpn-bench.sh <server-vpn-ip> 3 30
+```
+
+Switch to kernel WireGuard only if the Tailscale CPU cost is significant for
+your preset.
 
 ## Step 5 - Flash the Arduino
 
@@ -182,17 +213,20 @@ sudo reboot
 After the reboot:
 
 ```bash
-sudo systemctl enable fpv-video fpv-control
-sudo systemctl start  fpv-video fpv-control
+sudo systemctl enable fpv-video fpv-control fpv-audio-tx fpv-audio-rx
+sudo systemctl start  fpv-video fpv-control fpv-audio-tx fpv-audio-rx
 ```
 
 ## Step 7 - Verify it is running
 
 ```bash
-systemctl status fpv-video fpv-control fpv-net-watchdog.timer
+systemctl status fpv-video fpv-control fpv-audio-tx fpv-audio-rx fpv-link-manager
+fpv-diag
 ```
 
-The first two should show `Active: active (running)`.
+The services should show `Active: active (running)`. `fpv-diag` prints per-core
+load, temperature and throttle flags, which core each FPV process runs on, the
+active qdisc (look for `cake`), Wi-Fi link quality and recent warnings.
 
 Tail the live log:
 
@@ -203,13 +237,17 @@ journalctl -u fpv-control -f
 A healthy boot looks like:
 
 ```
-Starting FPV Control Daemon
+Starting FPV control daemon
+Relay:  100.x.x.x:3002 (UDP)
 Serial: /dev/fpv-arduino @ 500000 baud
+UDP link ready, relay address 100.x.x.x:3002
 Opened serial port /dev/fpv-arduino
-Connecting to ws://100.x.x.x:3001
-WebSocket connected, authenticating...
-Authentication successful
 ```
+
+On the server, `docker compose logs control-relay` shows
+`Pi endpoint <ip>:<port>` and `Pi link up` within a second. A repeating
+"Rejected N datagram(s)" line on the Pi means `AUTH_TOKEN` differs from the
+server's `CONTROL_AUTH_TOKEN`.
 
 From here on, the services auto-start on every boot. **You never need to
 launch anything manually from the terminal.** Power-cycle the Pi, drop it in
@@ -223,7 +261,7 @@ Only while debugging. To see raw output without systemd in the way:
 ```bash
 sudo systemctl stop fpv-control
 
-CONTROL_SERVER=ws://100.x.x.x:3001 AUTH_TOKEN=yourtoken \
+CONTROL_RELAY_HOST=100.x.x.x AUTH_TOKEN=yourtoken \
     SERIAL_PORT=/dev/fpv-arduino SERIAL_BAUD=500000 \
     python3 /home/pi/fpv/control-daemon/control_daemon.py
 ```
@@ -236,23 +274,86 @@ sudo systemctl start fpv-control
 
 The same trick works for the video pipeline - run
 `/home/pi/fpv/video-stream.sh` directly with env overrides like
-`VIDEO_BITRATE=500000 JANUS_HOST=100.x.x.x ./video-stream.sh`.
+`VIDEO_PRESET=balanced VIDEO_BITRATE=1500000 JANUS_HOST=100.x.x.x ./video-stream.sh`
+(stop `fpv-video` first so the camera is free).
 
 ## Command cheat sheet
 
 | Task                             | Command                                                         |
 | -------------------------------- | --------------------------------------------------------------- |
-| Start everything                 | `sudo systemctl start fpv-video fpv-control`                    |
-| Stop everything                  | `sudo systemctl stop fpv-video fpv-control`                     |
-| Restart after config edit        | `sudo systemctl daemon-reload && sudo systemctl restart fpv-control` |
+| Start everything                 | `sudo systemctl start fpv-video fpv-control fpv-audio-tx fpv-audio-rx` |
+| Stop everything                  | `sudo systemctl stop fpv-video fpv-control fpv-audio-tx fpv-audio-rx`  |
+| Restart after config edit        | `sudo systemctl daemon-reload && sudo systemctl restart fpv-video fpv-control fpv-audio-tx fpv-audio-rx` |
+| Health snapshot                  | `fpv-diag` (or `fpv-diag --watch`)                              |
 | Tail control logs                | `journalctl -u fpv-control -f`                                  |
 | Tail video logs                  | `journalctl -u fpv-video -f`                                    |
-| Tail LTE watchdog                | `journalctl -u fpv-net-watchdog -f`                             |
+| Tail link manager                | `journalctl -u fpv-link-manager -f`                             |
+| Re-detect USB audio devices      | `~/fpv/scripts/fpv-audio-detect.sh --write`                     |
+| Enable thermal bitrate governor  | `sudo systemctl enable --now fpv-bitrate-governor`              |
 | Is the Arduino connected?        | `ls -l /dev/fpv-arduino`                                        |
 | Is the LTE dongle up?            | `nmcli con show --active`                                       |
 | What route does traffic take?    | `ip route get 1.1.1.1`                                          |
 | CPU temperature + uptime         | `vcgencmd measure_temp; uptime`                                 |
 | Reset LTE connection             | `sudo nmcli con down lte-usb && sudo nmcli con up lte-usb`      |
+
+## Measuring latency
+
+Take a baseline before changing anything, and repeat after each change so you
+know what actually helped.
+
+### Video: glass-to-glass
+
+1. On a monitor, open a stopwatch that shows milliseconds (any "online
+   stopwatch" page works; use a 60 Hz or faster display).
+2. Point the car's camera at that monitor so the stopwatch is in view.
+3. Open the control page in a browser **next to** the same monitor, so both the
+   real stopwatch and its video copy are visible in one photo.
+4. Take a photo (or screenshot with a phone camera at 1/1000 s or faster). The
+   difference between the two clock readings is the glass-to-glass latency.
+5. Repeat at least 10 times and note the median and the worst case.
+
+Do this on the home Wi-Fi first (shows the pipeline cost), then over LTE (adds
+the network).
+
+### Controls: round-trip time
+
+The control link measures itself. The relay pings the Pi 4 times a second and
+the Pi echoes each timestamp, so the "Control RTT" readout in the UI footer and
+status panel is live, even when nobody is driving. It is relay-to-Pi-to-relay
+time; add your browser-to-server delay for the full path. For a reference
+point, ping the server from your browser's network.
+
+### Audio: mouth-to-ear
+
+Clap next to the car's microphone while recording both the clap and the
+browser's speaker output on a phone's video; step through the recording frame
+by frame to compare. For the browser-to-car direction, press push-to-talk, tap
+the mic, and record the car's speaker.
+
+### CPU, temperature and scheduling
+
+`fpv-diag --watch` while streaming. Healthy targets on the Pi 3: each core
+below about 70%, no `THROTTLED-NOW` flag, FPV processes on their assigned cores
+(`psr` column: control 1, audio 2, video 3).
+
+## Soak test
+
+Run for at least 30 minutes with everything active (video, audio both ways,
+and controls driven continuously from a gamepad), once on LTE and once on
+Wi-Fi:
+
+1. Watch `fpv-diag --watch` for throttling, rising temperature, or a core
+   pinned at 100%.
+2. Confirm the video stays smooth and Control RTT stays stable.
+3. Unplug and replug the Arduino: the daemon should log the serial error,
+   keep running, and reconnect within a second or two. The car must stop
+   (failsafe) while it is gone.
+4. Stop the relay (`docker compose stop control-relay`) while driving: the
+   car must stop within about a quarter of a second (deadman), and recover on
+   its own when the relay returns.
+5. Unplug the LTE dongle with Wi-Fi configured: `journalctl -u
+   fpv-link-manager -f` should show a switch to Wi-Fi within ~6 seconds, and
+   a switch back after the dongle returns.
 
 ## Gotchas
 
@@ -275,7 +376,20 @@ The same trick works for the video pipeline - run
   [`arduino/rc-controller/rc-controller.ino`](arduino/rc-controller/rc-controller.ino)
   (the `SERIAL_BAUD` constant at the top). Reflash the Nano.
 - **Video is laggy but control is fine:** You are probably network-bound,
-  not CPU-bound. Drop `VIDEO_BITRATE` to 500000 or `VIDEO_WIDTH/HEIGHT` to
-  640x360 in `fpv-video.service` and restart. Keep an eye on
-  `journalctl -u fpv-net-watchdog` - if it is bouncing the LTE interface
-  often, your cellular signal is the real problem.
+  not CPU-bound (the encoder runs on the GPU). Lower `VIDEO_BITRATE` or use
+  `VIDEO_PRESET=latency` in `~/fpv/fpv.env` and restart `fpv-video`. Make sure
+  `FPV_LTE_UPLINK_KBIT` in `/etc/default/fpv-network` is set from a real
+  measurement. Keep an eye on `journalctl -u fpv-link-manager` - if it is
+  switching links or bouncing the LTE interface often, your cellular signal is
+  the real problem.
+- **`rpicam-vid` finds no camera:** The OV5647 (Camera Module v1) needs
+  `dtoverlay=ov5647`, and there must be no active `start_x=1` line in
+  `config.txt` (the legacy stack and libcamera conflict). `setup.sh` handles
+  both; reboot afterwards.
+- **No control, but video works:** Control uses UDP port `3002` to the relay
+  (published in `docker-compose.yml`). Allow it through the server firewall
+  for your Tailscale interface, and use the same IP in `CONTROL_RELAY_HOST`
+  that the server will answer from.
+- **Audio device not found after reboot:** Re-run
+  `~/fpv/scripts/fpv-audio-detect.sh --write` to store stable card ids and
+  restart the audio services.

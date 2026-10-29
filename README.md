@@ -1,6 +1,6 @@
 # FPV Video Streaming System
 
-Low-latency FPV video streaming from Raspberry Pi to browser with WebRTC, plus real-time RC car control over WebSocket.
+Low-latency FPV video streaming from Raspberry Pi to browser with WebRTC, plus real-time RC car control (browser WebSocket to a relay, then authenticated UDP to the Pi). The Pi side is tuned for the Raspberry Pi 3 B v1.2: hardware H.264 encoding, dedicated CPU cores, and a shaped uplink.
 
 ## Architecture
 
@@ -12,9 +12,9 @@ Low-latency FPV video streaming from Raspberry Pi to browser with WebRTC, plus r
 │                               │ RTP │ ┌──────────────────────────┐ │WebRTC│ ┌──────────┐│
 │  ┌──────────┐                 │─────►│   Janus WebRTC Gateway   │─┼────►│ │  Video   ││
 │  │  Camera  │                 │ UDP │ │                          │ │     │ │  Player  ││
-│  │  OV5647  │─► gstreamer ────│:5004│ └──────────────────────────┘ │     │ └──────────┘│
+│  │  OV5647  │─► HW H.264 ─────│:5004│ └──────────────────────────┘ │     │ └──────────┘│
 │  └──────────┘                 │     │                              │     │             │
-│                               │ WS  │ ┌──────────────────────────┐ │ WS  │ ┌──────────┐│
+│                               │ UDP │ ┌──────────────────────────┐ │ WS  │ ┌──────────┐│
 │  ┌──────────┐   USB-CDC       │◄───►│ │  Control Relay (Node.js) │◄┼────►│ │  USB     ││
 │  │ control  │◄─ 10-byte ──► [Nano]──┼─┤                          │ │     │ │ Gamepad  ││
 │  │ _daemon  │  500kbaud       │     │ └──────────────────────────┘ │     │ └──────────┘│
@@ -35,8 +35,13 @@ shuttles binary control frames over USB serial and streams video.
 
 ## Features
 
-- **Low-Latency Video**: WebRTC streaming via Janus Gateway (~150-400ms glass-to-glass)
-- **Real-Time Control**: WebSocket-based control with 50Hz update rate
+- **Low-Latency Video**: WebRTC streaming via Janus Gateway. The Pi's
+  VideoCore IV hardware encoder does the H.264 work, so the CPU cores stay free.
+  Measure your own glass-to-glass number with the procedure in
+  [`DEPLOYMENT.md`](DEPLOYMENT.md#measuring-latency).
+- **Real-Time Control**: 50 Hz control. Browser to relay over WebSocket, relay to
+  Pi over HMAC-authenticated UDP (no TCP head-of-line blocking), written to the
+  Arduino the moment each datagram arrives
 - **Safety Features**: 250ms deadman timeout, auto-stop on tab blur
 - **4G/LTE Support**: Works over cellular via Tailscale VPN (CGNAT-friendly)
 - **Modern UI**: React-based control center with virtual joysticks and telemetry
@@ -50,9 +55,9 @@ shuttles binary control frames over USB serial and streams video.
 - Public IP or ability to port forward (ports 80/443)
 
 ### Raspberry Pi
-- Raspberry Pi 3B/3B+ (Pi 4 also supported)
+- Raspberry Pi 3 B v1.2 (the target board; 3B+ and Pi 4 also work)
 - Pi Camera Module v1 (OV5647) or v2
-- Raspberry Pi OS Bullseye or Bookworm
+- Raspberry Pi OS Bullseye or Bookworm (Bookworm recommended: `rpicam-apps`)
 - Arduino Nano (ATmega328P) attached via USB for PWM generation
 - EIOTCLUB 4G LTE USB WiFi 6 Dongle (HiLink/RNDIS) or home WiFi
 - Four standard hobby servos / ESC, powered by a **separate** BEC (not the Pi 5V rail)
@@ -135,24 +140,24 @@ scp -r pi/ pi@raspberrypi.local:~/fpv/
 # SSH into Pi
 ssh pi@raspberrypi.local
 
-# Run setup script (installs GStreamer, pyserial, NetworkManager,
-# the udev rule for /dev/fpv-arduino, LTE NM profile, and systemd units)
+# Run setup script (installs rpicam-apps, GStreamer, pyserial, NetworkManager,
+# the udev rule for /dev/fpv-arduino, LTE NM profile, systemd units, and the
+# low-latency system tuning: CAKE shaping, RAM-only logs, no swap, Bluetooth off)
 cd ~/fpv
-sudo ./setup.sh
+sudo FPV_WIFI_COUNTRY=US ./setup.sh   # use your own two-letter country code
 ```
 
-**Configure the services:**
+**Configure the services** (one file, loaded by every FPV service):
 
 ```bash
-# Edit video service - set your server's Tailscale IP
-sudo systemctl edit --full fpv-video.service
-# Change JANUS_HOST=100.x.x.x to your server's Tailscale IP
+nano ~/fpv/fpv.env
+# JANUS_HOST=<server tailscale ip>
+# CONTROL_RELAY_HOST=<server tailscale ip>   (UDP port 3002 by default)
+# AUTH_TOKEN=<same as CONTROL_AUTH_TOKEN in server/.env>
+# VIDEO_PRESET=latency            (or balanced / quality)
 
-# Edit control service - set server IP and auth token
-sudo systemctl edit --full fpv-control.service
-# Change CONTROL_SERVER=ws://100.x.x.x:3001
-# Change AUTH_TOKEN to match your server's token
-# (SERIAL_PORT=/dev/fpv-arduino is already correct)
+# Tell the traffic shaper your real uplink speeds
+sudo nano /etc/default/fpv-network
 
 # Edit WiFi fallback (optional, for bench debug)
 sudo nano /etc/NetworkManager/system-connections/wifi-fallback.nmconnection
@@ -165,14 +170,15 @@ ls -l /dev/fpv-arduino
 # Plug in the EIOTCLUB LTE dongle (must DHCP on usb0 or eth1):
 ip -br addr | grep -E 'usb0|eth1'
 
-# Start everything
+# Reboot once (camera overlay, Bluetooth-off and group changes), then start everything
 sudo systemctl daemon-reload
-sudo systemctl enable fpv-video fpv-control
-sudo systemctl start  fpv-video fpv-control
+sudo systemctl enable fpv-video fpv-control fpv-audio-tx fpv-audio-rx
+sudo systemctl start  fpv-video fpv-control fpv-audio-tx fpv-audio-rx
 
 # Check status
-systemctl status fpv-video fpv-control fpv-net-watchdog.timer
+systemctl status fpv-video fpv-control fpv-link-manager
 journalctl -u fpv-control -f
+fpv-diag   # per-core load, temperature, scheduling and link health
 ```
 
 ### 6. Connect and Drive!
@@ -203,20 +209,34 @@ journalctl -u fpv-control -f
 
 ### Pi Configuration
 
-**Video Stream** (`/etc/systemd/system/fpv-video.service`):
-- `JANUS_HOST`: Server's Tailscale IP
-- `VIDEO_WIDTH/HEIGHT`: Resolution (default: 960x540, tuned for LTE)
-- `VIDEO_FRAMERATE`: FPS (default: 25)
-- `VIDEO_BITRATE`: Bitrate in bps (default: 1000000 CBR)
-- `KEYFRAME_INTERVAL`: I-frame period in frames (default: 15)
-- `RTP_MTU`: RTP packet MTU (default: 1200, safe for cellular)
-- `CAMERA_STACK`: `auto` | `libcamera` | `v4l2` | `software`
+All Pi settings live in `~/fpv/fpv.env` (template:
+[`pi/fpv.env.example`](pi/fpv.env.example)). Values there override the defaults in
+the systemd units and scripts. After editing:
+`sudo systemctl daemon-reload && sudo systemctl restart fpv-video fpv-control fpv-audio-tx fpv-audio-rx`.
 
-**Control Daemon** (`/etc/systemd/system/fpv-control.service`):
-- `CONTROL_SERVER`: WebSocket URL of control relay
-- `AUTH_TOKEN`: Must match server's token
+**Video Stream:**
+- `JANUS_HOST`: Server's Tailscale IP
+- `VIDEO_PRESET`: `latency` (640x480@60, 1.2 Mbps, default), `balanced`
+  (1280x720@30, 2 Mbps) or `quality` (1920x1080@30, 3.5 Mbps)
+- `VIDEO_WIDTH/HEIGHT/FRAMERATE/BITRATE`, `KEYFRAME_INTERVAL`: override the preset
+- `VIDEO_EXPOSURE` (default `sport`), `VIDEO_AWB`, `VIDEO_SHUTTER_US`,
+  `VIDEO_SENSOR_MODE`, `VIDEO_EXTRA_ARGS`: camera tuning
+- `RTP_MTU`: RTP packet MTU (default: 1200, safe for cellular)
+- `CAMERA_STACK`: `auto` | `rpicam` | `raspivid` | `software`
+
+**Audio:**
+- `MIC_DEVICE` / `SPK_DEVICE`: ALSA devices by card id (set by
+  `scripts/fpv-audio-detect.sh --write`)
+- `OPUS_FRAME_SIZE` (default 10 ms), `JITTER_LATENCY_MS` (default 40 ms)
+
+**Control Daemon:**
+- `CONTROL_RELAY_HOST` / `CONTROL_RELAY_PORT`: relay UDP endpoint (port `3002`)
+- `AUTH_TOKEN`: Must match the server's token (also the HMAC key for datagrams)
 - `SERIAL_PORT`: Arduino device node (default: `/dev/fpv-arduino`)
 - `SERIAL_BAUD`: Baud rate (default: `500000`, fall back to `115200` if unstable)
+
+**Network shaping** (`/etc/default/fpv-network`): uplink caps in kbit/s for LTE,
+Wi-Fi and Ethernet, plus link-manager probe settings.
 
 ### Arduino Channel Configuration
 
@@ -263,9 +283,12 @@ step.
 [`pi/network/lte-usb.nmconnection`](pi/network/lte-usb.nmconnection) ships a
 NetworkManager profile with `autoconnect-priority=100` so LTE is preferred
 whenever the dongle is present, and
-[`pi/scripts/net-watchdog.sh`](pi/scripts/net-watchdog.sh) (wired up via the
-`fpv-net-watchdog.timer` unit) pings the internet every 30 s and bounces the
-interface if the dongle wedges on a tower handoff.
+[`pi/scripts/link-manager.sh`](pi/scripts/link-manager.sh) (the
+`fpv-link-manager` service) pings through LTE and Wi-Fi separately every 2 s.
+If LTE fails 3 probes in a row and Wi-Fi is healthy, it demotes the LTE default
+route so Wi-Fi takes over within about 6 s, and promotes LTE back after 5 good
+probes. With no Wi-Fi to fall back to, it bounces the dongle if it wedges on a
+tower handoff.
 
 Tailscale is still recommended on top of LTE — most carriers put you behind
 CGNAT, so the server won't have a routable public address to the Pi without it.
@@ -275,15 +298,18 @@ CGNAT, so the server won't have a routable public address to the Pi without it.
 ### Video Issues
 
 **No video in browser:**
-1. Check Pi camera is enabled: `vcgencmd get_camera`
-2. Test camera locally: `rpicam-vid -t 5000 -o test.h264`
-3. Check GStreamer is sending: `journalctl -u fpv-video -f`
+1. Check the camera is detected: `rpicam-hello --list-cameras`. If it is not,
+   check `dtoverlay=ov5647` in `/boot/firmware/config.txt` and that there is no
+   active `start_x=1` line (the legacy stack conflicts with libcamera).
+2. Test camera + hardware encoder locally: `rpicam-vid -t 5000 -o test.h264`
+3. Check the stream is sending: `journalctl -u fpv-video -f`
 4. Verify Janus is receiving: Check Janus logs in Docker
 
 **High latency:**
-- Reduce resolution to 640x480
-- Lower bitrate to 1000000
-- Increase keyframe interval
+- Run `fpv-diag` on the Pi: check per-core load, throttle flags and the qdisc
+- Use `VIDEO_PRESET=latency` (640x480@60)
+- Set `FPV_LTE_UPLINK_KBIT` in `/etc/default/fpv-network` to ~85-90% of the real uplink
+- Lower `VIDEO_BITRATE`
 
 ### Control Issues
 
@@ -294,9 +320,13 @@ CGNAT, so the server won't have a routable public address to the Pi without it.
    [`pi/udev/99-fpv-arduino.rules`](pi/udev/99-fpv-arduino.rules).
 3. `journalctl -u fpv-control -f` — look for "Serial write failed" or
    "Could not open /dev/fpv-arduino".
-4. Check WebSocket connection in browser DevTools.
-5. Verify `AUTH_TOKEN` matches on both Pi and server.
-6. Browser telemetry panel shows `arduino.failsafeActive=true`? The Nano is
+4. Check the WebSocket connection in browser DevTools.
+5. Verify `AUTH_TOKEN` matches on both Pi and server (the daemon logs
+   "Rejected N datagram(s)" when the HMAC key differs).
+6. Verify UDP port `3002` is published on the server (`docker compose ps`) and
+   not blocked by a firewall, and that `CONTROL_RELAY_HOST` is the same IP the
+   server answers from (use the Tailscale IP on both sides).
+7. Browser telemetry panel shows `arduino.failsafeActive=true`? The Nano is
    not receiving valid frames — suspect cable, baud mismatch, or a bad
    checksum implementation if you edited the protocol.
 
@@ -353,7 +383,10 @@ so `http://localhost` continues to work.
 1. **Use HTTPS**: Run `./server/scripts/init-tls.sh` for production (see TLS
    section above).
 2. **Strong Auth Token**: Generate a random token: `openssl rand -hex 32`
-3. **Firewall**: Only expose necessary ports (80/443)
+3. **Firewall**: Only expose necessary ports (80/443). Keep UDP `3002` (Pi
+   control link) and the RTP ingest ports `5004`/`5006` reachable only over
+   Tailscale, not the public internet. Control datagrams are HMAC-authenticated
+   but not encrypted; the VPN provides confidentiality.
 4. **Physical Kill Switch**: Add a hardware emergency stop
 5. **Rate Limiting**: Nginx config includes rate limiting
 
@@ -364,7 +397,7 @@ so `http://localhost` continues to work.
 │   ├── docker-compose.yml  # Container orchestration (nginx, janus, control-relay, certbot)
 │   ├── .env.example        # Template for CONTROL_AUTH_TOKEN / SERVER_DOMAIN / LETSENCRYPT_EMAIL
 │   ├── janus/              # Janus WebRTC Gateway config
-│   ├── control-relay/      # Node.js WebSocket relay
+│   ├── control-relay/      # Node.js relay: browser WebSocket <-> Pi UDP (HMAC)
 │   ├── nginx/              # nginx.conf + templates/default.conf.template (envsubst-driven)
 │   └── scripts/            # init-tls.sh (Let's Encrypt bootstrap)
 ├── web/                    # React frontend
@@ -374,11 +407,15 @@ so `http://localhost` continues to work.
 │   │   └── types/          # TypeScript definitions
 │   └── package.json
 ├── pi/                     # Raspberry Pi side
-│   ├── video-stream.sh     # GStreamer pipeline (LTE-tuned)
-│   ├── control-daemon/     # Python serial/websocket daemon
-│   ├── systemd/            # fpv-video / fpv-control / net-watchdog units
-│   ├── network/            # NetworkManager profiles (LTE, wifi fallback)
-│   ├── scripts/            # net-watchdog.sh
+│   ├── video-stream.sh     # rpicam-vid hardware H.264 -> RTP (presets)
+│   ├── audio-stream-tx.sh  # Pi mic -> Opus -> Janus
+│   ├── audio-receive.sh    # Janus AudioBridge -> Pi speaker
+│   ├── fpv.env.example     # All Pi settings (installed as ~/fpv/fpv.env)
+│   ├── control-daemon/     # Python UDP -> serial daemon (+ pytest tests)
+│   ├── systemd/            # fpv-video / -control / -audio-* / -tune / -link-manager units
+│   ├── network/            # NM profiles, CAKE/DSCP dispatcher, uplink caps
+│   ├── system/             # sysctl + journald tuning
+│   ├── scripts/            # link-manager, fpv-diag, fpv-tune, audio detect, benchmarks
 │   ├── udev/               # /dev/fpv-arduino symlink rule
 │   └── setup.sh            # Pi provisioning script
 ├── arduino/                # Arduino Nano firmware
@@ -395,23 +432,37 @@ so `http://localhost` continues to work.
   immune to Linux scheduler jitter on the Pi.
 - **Binary serial protocol** — 10-byte magic+XOR frame at 500 kbaud, 50 Hz
   (500 B/s total, sub-millisecond transit).
-- **Control daemon** runs with `Nice=-10` and realtime IO class.
-- **H.264 hardware encoder** (`v4l2h264enc`) with CBR rate control and a
-  15-frame GOP so packet-loss recovery is ≤ ~0.6 s at 25 fps.
+- **Hardware H.264 encoder** — `rpicam-vid` drives the VideoCore IV encoder, so
+  encoding costs almost no CPU. A 30-frame GOP (0.5 s at 60 fps) bounds
+  packet-loss recovery, and `--flush` hands every frame to the pipe at once.
+- **High frame rate preset** — 640x480@60 cuts capture-to-encode delay in half
+  compared to 30 fps.
+- **Control over UDP** — a lost packet is superseded by the next one instead of
+  stalling later commands (TCP head-of-line blocking). Each datagram is written
+  to the Arduino the instant it arrives; no polling tick.
+- **Core plan** — core 0 kernel/interrupts, core 1 control daemon (SCHED_FIFO),
+  core 2 audio (SCHED_FIFO), core 3 video. No `CPUQuota` (cgroup throttling
+  causes periodic stalls).
+- **CAKE uplink shaping + DSCP** — control and audio (EF) are sent ahead of
+  video, and queueing happens in the Pi instead of inside the LTE modem.
+- **Opus 10 ms frames + 40 ms jitter buffer** with FEC and packet-loss
+  concealment.
+- **Browser playout hints** — `jitterBufferTarget = 0` for video.
+- **Fast LTE/Wi-Fi failover** — 6 s detection instead of 90+ s.
 - **RTP `mtu=1200`** stays under typical cellular MTU and avoids
   fragmentation.
-- **`queue leaky=downstream max-buffers=1`** on both sides of the encoder —
-  if the uplink stalls, the pipeline drops the oldest frame instead of
-  growing latency.
-- **NetworkManager `autoconnect-priority`** pins the default route to LTE so
-  Tailscale/Janus always take the shortest path to the server.
 
-### Pi 3 Limitations
+### Pi 3 B v1.2 Limits (hardware, not software)
 
-The Pi 3's hardware H.264 encoder has limits:
-- Max reliable: 1080p25 or 720p30
-- Default: 960x540 @ 25 fps, 1.0 Mbps (reliable over LTE)
-- Use the hardware encoder (`v4l2h264enc`), not software (`x264enc`)
+- The hardware encoder is rated for 1080p30; for LTE, 640x480@60 or 720p30
+  are the practical choices.
+- Wi-Fi is 2.4 GHz 802.11n only and shares one USB 2.0 hub with Ethernet, the
+  LTE dongle and USB audio. Keep total traffic modest (the default preset is
+  well inside it).
+- Thermals: without a heatsink the SoC soft-throttles near 80 °C.
+  The UI shows "PI THROTTLED" when the firmware reports throttling or
+  undervoltage. The optional `fpv-bitrate-governor` service lowers the bitrate
+  automatically while throttled.
 
 ## License
 

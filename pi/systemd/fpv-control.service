@@ -2,6 +2,7 @@
 Description=FPV Control Daemon Service
 After=network-online.target NetworkManager-wait-online.service dev-fpv\x2darduino.device
 Wants=network-online.target NetworkManager-wait-online.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -10,23 +11,32 @@ Group=pi
 SupplementaryGroups=dialout
 WorkingDirectory=/home/pi/fpv/control-daemon
 
-# Deployment secrets (CONTROL_SERVER, AUTH_TOKEN) are loaded from fpv.env.
-EnvironmentFile=/home/pi/fpv/fpv.env
-
-# Arduino link (default udev symlink).
+# Defaults. fpv.env (loaded below) overrides these.
 Environment="SERIAL_PORT=/dev/fpv-arduino"
 Environment="SERIAL_BAUD=500000"
+Environment="CONTROL_RELAY_PORT=3002"
+
+# Deployment secrets (CONTROL_RELAY_HOST, CONTROL_RELAY_PORT, AUTH_TOKEN).
+EnvironmentFile=/home/pi/fpv/fpv.env
 
 ExecStart=/usr/bin/python3 /home/pi/fpv/control-daemon/control_daemon.py
 Restart=always
-RestartSec=3
+RestartSec=2
 
-# Low-latency scheduling for the 50 Hz control loop.
-Nice=-10
+# Latency-critical: dedicated core + highest real-time priority in the FPV set.
+#   core 0 - kernel, USB/Ethernet/Wi-Fi interrupts, journald
+#   core 1 - this daemon
+#   core 2 - audio TX/RX
+#   core 3 - video host threads + RTP payloader
+# The daemon sleeps in select() almost all the time, so SCHED_FIFO cannot
+# starve the other cores' work.
+CPUAffinity=1
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=50
 IOSchedulingClass=realtime
 IOSchedulingPriority=4
 
-# Resource limits
+# Safety net only.
 MemoryMax=128M
 
 # Logging

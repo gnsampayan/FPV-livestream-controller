@@ -20,6 +20,13 @@ autoconnect-priority=50
 [wifi]
 mode=infrastructure
 ssid=YOUR_WIFI_SSID
+# 2 = disable Wi-Fi power save. With power save on, the radio sleeps between
+# beacons (typically ~100 ms apart) and every packet can wait for the next
+# wake-up, which wrecks control latency.
+powersave=2
+# The Pi 3 B v1.2 radio is 2.4 GHz only; pinning the band stops it wasting
+# time scanning 5 GHz channels when roaming.
+band=bg
 
 [wifi-security]
 key-mgmt=wpa-psk

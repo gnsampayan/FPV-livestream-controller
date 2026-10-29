@@ -1,0 +1,18 @@
+[Unit]
+Description=FPV runtime tuning (CPU governor, USB/Wi-Fi power, HDMI, swap)
+# Run before the services that care about it, and after the network stack has
+# created the Wi-Fi interface so power save can be switched off.
+Before=fpv-video.service fpv-audio-tx.service fpv-audio-rx.service fpv-control.service
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/fpv-tune.sh
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fpv-tune
+
+[Install]
+WantedBy=multi-user.target

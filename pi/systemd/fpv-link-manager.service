@@ -1,0 +1,23 @@
+[Unit]
+Description=FPV link manager (LTE/Wi-Fi health probes and fast failover)
+After=network-online.target NetworkManager.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/fpv-link-manager.sh
+Restart=always
+RestartSec=2
+
+# Housekeeping core (kernel and interrupts live here too); low priority so a
+# probe burst can never delay control, audio or video.
+CPUAffinity=0
+Nice=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fpv-link-manager
+
+[Install]
+WantedBy=multi-user.target

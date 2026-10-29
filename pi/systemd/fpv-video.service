@@ -2,6 +2,7 @@
 Description=FPV Video Streaming Service
 After=network-online.target NetworkManager-wait-online.service
 Wants=network-online.target NetworkManager-wait-online.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -10,27 +11,36 @@ Group=pi
 SupplementaryGroups=video
 WorkingDirectory=/home/pi/fpv
 
-# Deployment secrets (JANUS_HOST) are loaded from fpv.env.
-EnvironmentFile=/home/pi/fpv/fpv.env
+# Defaults. Anything set in fpv.env (loaded below) overrides these, so tune
+# the stream there instead of editing this unit. See fpv.env.example.
 Environment="JANUS_PORT=5004"
-
-# Pi 3 v1.2 + LTE defaults. Lowered from 960x540@1Mbps to 854x480@700kbps so
-# software x264 has CPU headroom for the audio TX/RX pipelines that run
-# alongside this service. Override any of these without editing the script.
-Environment="VIDEO_WIDTH=854"
-Environment="VIDEO_HEIGHT=480"
-Environment="VIDEO_FRAMERATE=25"
-Environment="VIDEO_BITRATE=700000"
-Environment="KEYFRAME_INTERVAL=25"
+Environment="VIDEO_PRESET=latency"
 Environment="RTP_MTU=1200"
-Environment="CAMERA_STACK=software"
+Environment="CAMERA_STACK=auto"
+
+# Deployment secrets and overrides (JANUS_HOST, VIDEO_*).
+EnvironmentFile=/home/pi/fpv/fpv.env
 
 ExecStart=/home/pi/fpv/video-stream.sh
 Restart=always
-RestartSec=5
+RestartSec=2
 
-MemoryMax=256M
-CPUQuota=80%
+# Core plan for the Pi 3 (4x Cortex-A53):
+#   core 0 - kernel, USB/Ethernet/Wi-Fi interrupts, journald
+#   core 1 - control daemon (SCHED_FIFO)
+#   core 2 - audio TX/RX (SCHED_FIFO)
+#   core 3 - video host threads + RTP payloader (this unit)
+# The H.264 encode itself runs on the VideoCore IV, not on these cores.
+#
+# No CPUQuota on purpose: cgroup quotas throttle in 100 ms windows, which
+# shows up as periodic video stalls. Priority and affinity do the job
+# without that jitter.
+CPUAffinity=3
+Nice=-10
+CPUWeight=500
+
+# Safety net only; the dma-buf frame buffers are not charged here.
+MemoryMax=384M
 
 StandardOutput=journal
 StandardError=journal

@@ -2,6 +2,7 @@
 Description=FPV Audio RX Service (Janus -> Pi speaker)
 After=network-online.target NetworkManager-wait-online.service sound.target
 Wants=network-online.target NetworkManager-wait-online.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -10,23 +11,33 @@ Group=pi
 SupplementaryGroups=audio
 WorkingDirectory=/home/pi/fpv
 
-# UDP port the Janus AudioBridge RTP forwarder targets. Must match
-# AUDIO_RX_PORT in the audiobridge-bootstrap service in docker-compose.yml.
+# Defaults. fpv.env (loaded below) overrides these.
+#
+# AUDIO_RX_PORT is the UDP port the Janus AudioBridge RTP forwarder targets.
+# Must match AUDIO_RX_PORT in the audiobridge-bootstrap service in
+# docker-compose.yml.
+#
+# SPK_DEVICE is best set by running scripts/fpv-audio-detect.sh --write,
+# which stores a stable ALSA card id instead of a card number.
 Environment="AUDIO_RX_PORT=5008"
 Environment="OPUS_PT=111"
-Environment="JITTER_LATENCY_MS=80"
-
-# USB speaker device. Run `aplay -l` on the Pi to find your card/device
-# numbers. plughw:1,0 is the typical USB audio gadget when the analog jack
-# is card 0.
+Environment="JITTER_LATENCY_MS=40"
 Environment="SPK_DEVICE=plughw:1,0"
+
+# Optional overrides (the file is not required for this unit to start).
+EnvironmentFile=-/home/pi/fpv/fpv.env
 
 ExecStart=/home/pi/fpv/audio-receive.sh
 Restart=always
-RestartSec=5
+RestartSec=2
 
+# Core 2 + real-time priority (shared with audio TX).
+CPUAffinity=2
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=40
+
+# Safety net only.
 MemoryMax=64M
-CPUQuota=20%
 
 StandardOutput=journal
 StandardError=journal

@@ -1,0 +1,85 @@
+#!/bin/bash
+# NetworkManager dispatcher: shape the uplink to kill bufferbloat.
+#
+# Install to /etc/NetworkManager/dispatcher.d/90-fpv-qos (mode 0755, owned by
+# root). NetworkManager runs it with:  $1 = interface, $2 = action.
+#
+# Why this matters: LTE and Wi-Fi uplinks have large hidden buffers. When the
+# video stream briefly exceeds the real uplink rate, packets queue inside the
+# modem/driver for hundreds of milliseconds, and the control and audio packets
+# queue behind them. Capping our egress slightly below the real link rate moves
+# that queue into the Pi, where CAKE keeps it short (fair per-flow queuing plus
+# active queue management) and sends small, DSCP-marked packets first. The
+# control daemon marks its datagrams EF, audio EF, video AF31.
+#
+# Configuration comes from /etc/default/fpv-network (see
+# network/fpv-network.env.example). CAKE needs the sch_cake kernel module;
+# if it is missing, fq_codel (no rate cap) is used instead.
+
+set -u
+
+IFACE="${1:-}"
+ACTION="${2:-}"
+CONFIG_FILE="/etc/default/fpv-network"
+
+# Defaults, overridden by the config file.
+FPV_QOS_ENABLED=1
+FPV_LTE_UPLINK_KBIT=8000
+FPV_WIFI_UPLINK_KBIT=15000
+FPV_ETH_UPLINK_KBIT=90000
+
+if [ -r "${CONFIG_FILE}" ]; then
+    # shellcheck disable=SC1090
+    . "${CONFIG_FILE}"
+fi
+
+log() {
+    logger -t fpv-qos "$*"
+}
+
+[ "${FPV_QOS_ENABLED}" = "1" ] || exit 0
+[ -n "${IFACE}" ] || exit 0
+
+# Only act when an interface comes up (or its address changes). Skip loopback
+# and virtual/VPN interfaces: shaping the physical uplink is what matters.
+case "${ACTION}" in
+    up|dhcp4-change) ;;
+    *) exit 0 ;;
+esac
+
+case "${IFACE}" in
+    lo|tailscale*|wg*|docker*|br-*|veth*) exit 0 ;;
+esac
+
+[ -d "/sys/class/net/${IFACE}" ] || exit 0
+
+# Pick the rate cap for this interface type.
+if [ -d "/sys/class/net/${IFACE}/wireless" ]; then
+    KBIT="${FPV_WIFI_UPLINK_KBIT}"
+    KIND="wifi"
+elif [ -e "/sys/class/net/${IFACE}/device/driver" ] \
+     && readlink "/sys/class/net/${IFACE}/device/driver" 2>/dev/null | grep -q 'smsc95xx\|lan78xx'; then
+    KBIT="${FPV_ETH_UPLINK_KBIT}"
+    KIND="ethernet"
+else
+    # USB RNDIS/CDC-Ether dongles (usb0, eth1, enx*) are the LTE modem.
+    KBIT="${FPV_LTE_UPLINK_KBIT}"
+    KIND="lte"
+fi
+
+if ! command -v tc >/dev/null 2>&1; then
+    log "tc not installed (apt install iproute2); skipping ${IFACE}"
+    exit 0
+fi
+
+# diffserv4 maps DSCP to four tins: voice (EF), video (AF3x/AF4x), best
+# effort, and bulk. Control and audio (EF) therefore bypass queued video.
+if tc qdisc replace dev "${IFACE}" root cake bandwidth "${KBIT}kbit" diffserv4 2>/dev/null; then
+    log "${IFACE} (${KIND}): CAKE diffserv4 at ${KBIT} kbit/s"
+elif tc qdisc replace dev "${IFACE}" root fq_codel 2>/dev/null; then
+    log "${IFACE} (${KIND}): CAKE unavailable, fq_codel (no rate cap) installed"
+else
+    log "${IFACE} (${KIND}): could not install a qdisc"
+fi
+
+exit 0

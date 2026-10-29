@@ -1,4 +1,9 @@
+import { THROTTLE_ACTIVE_MASK } from '../types';
 import type { ArduinoLink, TelemetryMessage, ConnectionState } from '../types';
+
+// Control round-trip thresholds (ms) for colouring the readout.
+const RTT_WARN_MS = 100;
+const RTT_DANGER_MS = 250;
 
 interface StatusPanelProps {
     controlState: ConnectionState;
@@ -45,6 +50,13 @@ export function StatusPanel({
                 {/* Telemetry */}
                 {telemetry && (
                     <div className="space-y-2">
+                        <RttRow rttMs={telemetry.rttMs} />
+                        {telemetry.throttledFlags !== undefined &&
+                            (telemetry.throttledFlags & THROTTLE_ACTIVE_MASK) !== 0 && (
+                                <div className="px-2 py-1 bg-fpv-warning/20 border border-fpv-warning rounded text-[11px] text-fpv-warning font-semibold tracking-wider">
+                                    PI THROTTLED - check power and cooling
+                                </div>
+                            )}
                         {telemetry.battery !== undefined && (
                             <TelemetryBar
                                 label="Battery"
@@ -107,6 +119,35 @@ function StatusRow({ label, status, connected }: StatusRowProps) {
                 </span>
                 <div className={`status-dot ${connected ? 'connected' : 'disconnected'}`} />
             </div>
+        </div>
+    );
+}
+
+interface RttRowProps {
+    rttMs?: number | null;
+}
+
+function RttRow({ rttMs }: RttRowProps) {
+    if (rttMs === undefined || rttMs === null) {
+        return (
+            <div className="flex justify-between text-xs">
+                <span className="text-gray-400">Control RTT</span>
+                <span className="text-gray-500">--</span>
+            </div>
+        );
+    }
+
+    let colorClass = 'text-fpv-accent';
+    if (rttMs > RTT_DANGER_MS) {
+        colorClass = 'text-fpv-danger';
+    } else if (rttMs > RTT_WARN_MS) {
+        colorClass = 'text-fpv-warning';
+    }
+
+    return (
+        <div className="flex justify-between text-xs">
+            <span className="text-gray-400">Control RTT</span>
+            <span className={colorClass}>{rttMs} ms</span>
         </div>
     );
 }

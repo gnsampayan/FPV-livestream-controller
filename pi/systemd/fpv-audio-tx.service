@@ -2,6 +2,7 @@
 Description=FPV Audio TX Service (Pi mic -> Janus)
 After=network-online.target NetworkManager-wait-online.service sound.target
 Wants=network-online.target NetworkManager-wait-online.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -10,27 +11,32 @@ Group=pi
 SupplementaryGroups=audio
 WorkingDirectory=/home/pi/fpv
 
-# Deployment secrets (JANUS_HOST) are loaded from fpv.env.
-EnvironmentFile=/home/pi/fpv/fpv.env
+# Defaults. fpv.env (loaded below) overrides these. MIC_DEVICE is best set by
+# running scripts/fpv-audio-detect.sh --write, which stores a stable card id.
 Environment="JANUS_AUDIO_PORT=5006"
-
-# USB mic device. Run `arecord -l` on the Pi to find your card/device numbers.
-# `plughw:1,0` is the typical USB audio gadget when the analog jack is card 0.
 Environment="MIC_DEVICE=plughw:1,0"
-
 Environment="AUDIO_SAMPLE_RATE=48000"
 Environment="AUDIO_CHANNELS=1"
 Environment="OPUS_BITRATE=24000"
-Environment="OPUS_FRAME_SIZE=20"
+Environment="OPUS_FRAME_SIZE=10"
 Environment="OPUS_PT=111"
 Environment="RTP_MTU=1200"
 
+# Deployment secrets and overrides (JANUS_HOST, MIC_DEVICE, ...).
+EnvironmentFile=/home/pi/fpv/fpv.env
+
 ExecStart=/home/pi/fpv/audio-stream-tx.sh
 Restart=always
-RestartSec=5
+RestartSec=2
 
+# Core 2 + real-time priority: audio is small but must never miss a 10 ms
+# deadline. No CPUQuota (cgroup throttling causes audible glitches).
+CPUAffinity=2
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=40
+
+# Safety net only.
 MemoryMax=64M
-CPUQuota=20%
 
 StandardOutput=journal
 StandardError=journal
