@@ -23,18 +23,24 @@ services:
       - ./janus/janus.transport.websockets.jcfg:/janus-templates/janus.transport.websockets.jcfg:ro
       - ./janus/janus.plugin.streaming.jcfg:/janus-templates/janus.plugin.streaming.jcfg:ro
       - ./janus/janus.plugin.audiobridge.jcfg:/janus-templates/janus.plugin.audiobridge.jcfg:ro
-    command: >
-      /bin/sh -c "
-        cp /janus-templates/*.jcfg /usr/local/etc/janus/;
-        sed -i
-          -e 's|__NAT_1_1_MAPPING__|'\"$$NAT_1_1_MAPPING\"'|g'
-          -e 's|__JANUS_ADMIN_SECRET__|'\"$$JANUS_ADMIN_SECRET\"'|g'
-          /usr/local/etc/janus/janus.jcfg;
-        sed -i
-          -e 's|__AUDIOBRIDGE_ADMIN_KEY__|'\"$$AUDIOBRIDGE_ADMIN_KEY\"'|g'
-          /usr/local/etc/janus/janus.plugin.audiobridge.jcfg;
+    # The script is a literal block (`|`) with explicit `\` continuations.
+    # Do NOT switch this to a folded block (`>`): YAML keeps the line breaks
+    # of more-indented lines in folded blocks, which splits the `sed -i`
+    # invocations into separate commands and leaves the placeholders
+    # unsubstituted (Janus then fails to start).
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        cp /janus-templates/*.jcfg /usr/local/etc/janus/
+        sed -i \
+          -e 's|__NAT_1_1_MAPPING__|'"$$NAT_1_1_MAPPING"'|g' \
+          -e 's|__JANUS_ADMIN_SECRET__|'"$$JANUS_ADMIN_SECRET"'|g' \
+          /usr/local/etc/janus/janus.jcfg
+        sed -i \
+          -e 's|__AUDIOBRIDGE_ADMIN_KEY__|'"$$AUDIOBRIDGE_ADMIN_KEY"'|g' \
+          /usr/local/etc/janus/janus.plugin.audiobridge.jcfg
         exec janus
-      "
     networks:
       - fpv-network
 
