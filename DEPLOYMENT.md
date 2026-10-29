@@ -280,22 +280,22 @@ The same trick works for the video pipeline - run
 
 ## Command cheat sheet
 
-| Task                             | Command                                                         |
-| -------------------------------- | --------------------------------------------------------------- |
-| Start everything                 | `sudo systemctl start fpv-video fpv-control fpv-audio-tx fpv-audio-rx` |
-| Stop everything                  | `sudo systemctl stop fpv-video fpv-control fpv-audio-tx fpv-audio-rx`  |
-| Restart after config edit        | `sudo systemctl daemon-reload && sudo systemctl restart fpv-video fpv-control fpv-audio-tx fpv-audio-rx` |
-| Health snapshot                  | `fpv-diag` (or `fpv-diag --watch`)                              |
-| Tail control logs                | `journalctl -u fpv-control -f`                                  |
-| Tail video logs                  | `journalctl -u fpv-video -f`                                    |
-| Tail link manager                | `journalctl -u fpv-link-manager -f`                             |
-| Re-detect USB audio devices      | `~/fpv/scripts/fpv-audio-detect.sh --write`                     |
-| Enable thermal bitrate governor  | `sudo systemctl enable --now fpv-bitrate-governor`              |
-| Is the Arduino connected?        | `ls -l /dev/fpv-arduino`                                        |
-| Is the LTE dongle up?            | `nmcli con show --active`                                       |
-| What route does traffic take?    | `ip route get 1.1.1.1`                                          |
-| CPU temperature + uptime         | `vcgencmd measure_temp; uptime`                                 |
-| Reset LTE connection             | `sudo nmcli con down lte-usb && sudo nmcli con up lte-usb`      |
+| Task                            | Command                                                                                                  |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Start everything                | `sudo systemctl start fpv-video fpv-control fpv-audio-tx fpv-audio-rx`                                   |
+| Stop everything                 | `sudo systemctl stop fpv-video fpv-control fpv-audio-tx fpv-audio-rx`                                    |
+| Restart after config edit       | `sudo systemctl daemon-reload && sudo systemctl restart fpv-video fpv-control fpv-audio-tx fpv-audio-rx` |
+| Health snapshot                 | `fpv-diag` (or `fpv-diag --watch`)                                                                       |
+| Tail control logs               | `journalctl -u fpv-control -f`                                                                           |
+| Tail video logs                 | `journalctl -u fpv-video -f`                                                                             |
+| Tail link manager               | `journalctl -u fpv-link-manager -f`                                                                      |
+| Re-detect USB audio devices     | `~/fpv/scripts/fpv-audio-detect.sh --write`                                                              |
+| Enable thermal bitrate governor | `sudo systemctl enable --now fpv-bitrate-governor`                                                       |
+| Is the Arduino connected?       | `ls -l /dev/fpv-arduino`                                                                                 |
+| Is the LTE dongle up?           | `nmcli con show --active`                                                                                |
+| What route does traffic take?   | `ip route get 1.1.1.1`                                                                                   |
+| CPU temperature + uptime        | `vcgencmd measure_temp; uptime`                                                                          |
+| Reset LTE connection            | `sudo nmcli con down lte-usb && sudo nmcli con up lte-usb`                                               |
 
 ## Measuring latency
 
@@ -353,7 +353,7 @@ Wi-Fi:
    car must stop within about a quarter of a second (deadman), and recover on
    its own when the relay returns.
 5. Unplug the LTE dongle with Wi-Fi configured: `journalctl -u
-   fpv-link-manager -f` should show a switch to Wi-Fi within ~6 seconds, and
+fpv-link-manager -f` should show a switch to Wi-Fi within ~6 seconds, and
    a switch back after the dongle returns.
 
 ## CI/CD: automatic deploys to the server
@@ -408,8 +408,8 @@ Do these once. The server's repo checkout is `/opt/fpv`.
    GitHub secret below, because every deploy replaces tracked files with the
    repo's version.
 
-4. **Install the GitHub Actions runner.** In the repo: *Settings -> Actions ->
-   Runners -> New self-hosted runner -> Linux*. Run the commands it shows
+4. **Install the GitHub Actions runner.** In the repo: _Settings -> Actions ->
+   Runners -> New self-hosted runner -> Linux_. Run the commands it shows
    (download, `./config.sh`), and when `config.sh` asks for labels, enter
    `fpv-server`. Then install it as a service so it starts on boot:
 
@@ -419,24 +419,24 @@ Do these once. The server's repo checkout is `/opt/fpv`.
    sudo ./svc.sh status
    ```
 
-   The runner should appear as *Idle* with the labels `self-hosted, fpv-server`.
+   The runner should appear as _Idle_ with the labels `self-hosted, fpv-server`.
 
 ### One-time setup (on GitHub)
 
-*Settings -> Secrets and variables -> Actions*:
+_Settings -> Secrets and variables -> Actions_:
 
-| Kind | Name | Value |
-|---|---|---|
-| Secret | `VITE_AUTH_TOKEN` | Same value as `CONTROL_AUTH_TOKEN` in `server/.env`. Vite bakes it into the web bundle at build time, so it is visible in browser DevTools by design. |
-| Variable | `DEPLOY_DIR` | `/opt/fpv` |
-| Variable | `SERVER_DOMAIN` | `gspyn.com` |
+| Kind     | Name              | Value                                                                                                                                                 |
+| -------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Secret   | `VITE_AUTH_TOKEN` | Same value as `CONTROL_AUTH_TOKEN` in `server/.env`. Vite bakes it into the web bundle at build time, so it is visible in browser DevTools by design. |
+| Variable | `DEPLOY_DIR`      | `/opt/fpv`                                                                                                                                            |
+| Variable | `SERVER_DOMAIN`   | `gspyn.com`                                                                                                                                           |
 
 Also:
 
-- *Settings -> Environments -> New environment* named `production`. Optionally
+- _Settings -> Environments -> New environment_ named `production`. Optionally
   add yourself as a required reviewer to get a manual approval before each
   deploy.
-- *Settings -> Actions -> General -> Fork pull request workflows*: require
+- _Settings -> Actions -> General -> Fork pull request workflows_: require
   approval for all outside collaborators (see the security notes below).
 - The repository must be reachable by `git fetch` from the server without a
   password (public repo, or credentials already configured in `/opt/fpv`).
@@ -444,7 +444,7 @@ Also:
 
 ### First deploy
 
-1. Run the workflow by hand first: *Actions -> CI/CD -> Run workflow* on
+1. Run the workflow by hand first: _Actions -> CI/CD -> Run workflow_ on
    `main`, leaving **Dry run** checked. This runs the tests, builds and pushes
    the images, and then, on the server, only performs the pre-flight checks,
    the backup and overwrite guard, verifies the images can be pulled, and
@@ -458,11 +458,11 @@ Also:
 
 ### What a deploy does and does not touch
 
-| | |
-|---|---|
-| Replaced with the repo's version | Tracked files (compose file, nginx and Janus config, scripts, ...) |
-| Never touched | `server/.env`, git-ignored files, files that exist only on the server, Docker volumes (including the Let's Encrypt certificates) |
-| Saved before every deploy | `/opt/fpv-backups/<time>-<commit>/` with `server.env`, `local-edits.patch` (exact), `local-edits.ignoring-eol.patch` (readable) and the old commit hash. The newest 10 are kept. |
+|                                  |                                                                                                                                                                                  |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Replaced with the repo's version | Tracked files (compose file, nginx and Janus config, scripts, ...)                                                                                                               |
+| Never touched                    | `server/.env`, git-ignored files, files that exist only on the server, Docker volumes (including the Let's Encrypt certificates)                                                 |
+| Saved before every deploy        | `/opt/fpv-backups/<time>-<commit>/` with `server.env`, `local-edits.patch` (exact), `local-edits.ignoring-eol.patch` (readable) and the old commit hash. The newest 10 are kept. |
 
 If a file that exists only on the server has the same path as a file the repo
 tracks (and differs), the deploy stops before changing anything and lists it.
@@ -470,7 +470,7 @@ tracks (and differs), the deploy stops before changing anything and lists it.
 If the health check fails (all containers running, UDP 3002 published, HTTPS
 `/health` answering, stable for 3 consecutive polls), the script restores the
 previous image tag, the previous commit and your saved local edits, and the job
-fails. The deploy log is in the *Actions* tab.
+fails. The deploy log is in the _Actions_ tab.
 
 ### Manual runs and rollback
 
@@ -494,8 +494,8 @@ Your edits from before the first deploy are in the oldest folder of
 
 - A self-hosted runner executes workflow code on your server, and the `docker`
   group is effectively root. Only the `deploy` job uses it, and only for pushes
-  to `main` (or a manual run on `main`). Keep *Require approval for all outside
-  collaborators* enabled so a fork's pull request can never reach it.
+  to `main` (or a manual run on `main`). Keep _Require approval for all outside
+  collaborators_ enabled so a fork's pull request can never reach it.
 - Keep the GHCR packages private. The deploy job logs in with the workflow's
   short-lived `GITHUB_TOKEN`, so no personal access token is stored anywhere.
 - Deploying recreates the control relay, so a live driving session reconnects

@@ -14,11 +14,10 @@ general: {
     events = true
 }
 
-fpv-talk: {
+room-1234: {
     description = "FPV push-to-talk"
     # 4-digit room id used by both web/src/hooks/useAudioBridge.ts and the
     # bootstrap sidecar.
-    room = 1234
 
     # 16 kHz keeps CPU + bandwidth low and is plenty for voice. The Pi's
     # opusdec resamples to whatever alsasink wants.
