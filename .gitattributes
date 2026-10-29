@@ -1,0 +1,5 @@
+*.sh text eol=lf
+
+# Mark vendored JS libraries so GitHub Linguist excludes them from
+# the repository language breakdown.
+web/public/vendor/** linguist-vendored
