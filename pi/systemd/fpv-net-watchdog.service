@@ -1,0 +1,17 @@
+[Unit]
+Description=FPV LTE connectivity watchdog
+After=network-online.target NetworkManager.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment="PING_TARGET=1.1.1.1"
+Environment="PING_COUNT=2"
+Environment="PING_TIMEOUT=3"
+Environment="FAIL_THRESHOLD=3"
+Environment="LTE_CONN=lte-usb"
+ExecStart=/usr/local/bin/fpv-net-watchdog.sh
+Nice=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fpv-net-watchdog

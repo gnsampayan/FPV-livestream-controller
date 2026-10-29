@@ -1,0 +1,36 @@
+[Unit]
+Description=FPV Audio RX Service (Janus -> Pi speaker)
+After=network-online.target NetworkManager-wait-online.service sound.target
+Wants=network-online.target NetworkManager-wait-online.service
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+SupplementaryGroups=audio
+WorkingDirectory=/home/pi/fpv
+
+# UDP port the Janus AudioBridge RTP forwarder targets. Must match
+# AUDIO_RX_PORT in the audiobridge-bootstrap service in docker-compose.yml.
+Environment="AUDIO_RX_PORT=5008"
+Environment="OPUS_PT=111"
+Environment="JITTER_LATENCY_MS=80"
+
+# USB speaker device. Run `aplay -l` on the Pi to find your card/device
+# numbers. plughw:1,0 is the typical USB audio gadget when the analog jack
+# is card 0.
+Environment="SPK_DEVICE=plughw:1,0"
+
+ExecStart=/home/pi/fpv/audio-receive.sh
+Restart=always
+RestartSec=5
+
+MemoryMax=64M
+CPUQuota=20%
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fpv-audio-rx
+
+[Install]
+WantedBy=multi-user.target

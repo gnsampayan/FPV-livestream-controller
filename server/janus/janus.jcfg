@@ -1,0 +1,87 @@
+# Janus Gateway Configuration
+
+general: {
+    # The canyan/janus-gateway image builds Janus with prefix /usr/local,
+    # so configs live in /usr/local/etc/janus and the plugin/transport/
+    # event/logger shared objects live under /usr/local/lib/janus/.
+    configs_folder = "/usr/local/etc/janus"
+    plugins_folder = "/usr/local/lib/janus/plugins"
+    transports_folder = "/usr/local/lib/janus/transports"
+    events_folder = "/usr/local/lib/janus/events"
+    loggers_folder = "/usr/local/lib/janus/loggers"
+    
+    debug_level = 4
+    debug_timestamps = true
+    debug_colors = true
+    
+    admin_secret = "__JANUS_ADMIN_SECRET__"
+    
+    # Server info
+    server_name = "FPV Streaming Server"
+}
+
+# Certificate for DTLS (WebRTC)
+certificates: {
+    # cert_pem = "/etc/janus/ssl/cert.pem"
+    # cert_key = "/etc/janus/ssl/key.pem"
+}
+
+# Media settings
+media: {
+    # IPv4 only for simplicity
+    ipv6 = false
+    
+    # RTP port range for WebRTC
+    rtp_port_range = "10000-10050"
+    
+    # DSCP for QoS
+    # dscp_audio_rtp = 46
+    # dscp_video_rtp = 34
+}
+
+# NAT settings
+nat: {
+    # STUN is not needed when nat_1_1_mapping is set -- Janus already knows
+    # its public-facing IP, so doing a STUN binding request on every session
+    # init just adds a 100-500ms roundtrip to stun.l.google.com. Re-enable
+    # (and pick an IP-literal STUN to avoid DNS) only if you ever run
+    # without 1:1 NAT.
+    # stun_server = "stun.l.google.com"
+    # stun_port = 19302
+
+    # Force Janus to advertise these IPs in ICE candidates instead of the
+    # container's internal Docker-bridge IP.
+    #
+    # Janus 1.x supports multiple comma-separated addresses here. We list
+    # BOTH the public IP (for remote viewers on cellular/internet) and the
+    # LAN IP (for local viewers connecting from inside the home network).
+    # ICE will try both candidate pairs and pick whichever works for the
+    # specific client -- so a phone on AT&T cellular uses the public IP,
+    # and a laptop on home WiFi uses the LAN IP. Without the public entry
+    # here, the laptop worked but the phone/remote viewer got "connected"
+    # without video because their client couldn't route to the LAN IP.
+    #
+    # If the public IP ever changes (ISP lease change without a static
+    # allocation), update this value. A DynDNS alias will NOT work here --
+    # nat_1_1_mapping needs literal IPs.
+    nat_1_1_mapping = "__NAT_1_1_MAPPING__"
+
+    # Enable ICE-Lite if you know your server is publicly reachable
+    ice_lite = false
+
+    # Enable full trickle ICE
+    full_trickle = true
+}
+
+# Plugin configurations to load. AudioBridge is enabled (it backs the
+# browser-to-Pi push-to-talk channel via an RTP forwarder to the Pi);
+# everything else we don't use stays disabled.
+plugins: {
+    disable = "libjanus_echotest.so,libjanus_recordplay.so,libjanus_sip.so,libjanus_nosip.so,libjanus_textroom.so,libjanus_videocall.so,libjanus_videoroom.so,libjanus_voicemail.so"
+}
+
+# Transports to load
+transports: {
+    disable = "libjanus_http.so,libjanus_rabbitmq.so,libjanus_mqtt.so,libjanus_nanomsg.so,libjanus_unix.so"
+}
+

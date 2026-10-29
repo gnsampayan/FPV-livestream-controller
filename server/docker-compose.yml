@@ -1,0 +1,140 @@
+services:
+  janus:
+    image: canyan/janus-gateway:latest
+    container_name: fpv-janus
+    restart: unless-stopped
+    ports:
+      - "8188:8188" # WebSocket signaling
+      - "8088:8088" # HTTP API
+      - "5004:5004/udp" # RTP video ingest from Pi
+      - "5006:5006/udp" # RTP audio ingest from Pi (Opus, FPV mic)
+      - "10000-10050:10000-10050/udp" # WebRTC media ports
+    environment:
+      - NAT_1_1_MAPPING=${NAT_1_1_MAPPING}
+      - JANUS_ADMIN_SECRET=${JANUS_ADMIN_SECRET:-changeme}
+      - AUDIOBRIDGE_ADMIN_KEY=${AUDIOBRIDGE_ADMIN_KEY:-changeme}
+    # Config templates are mounted read-only into a staging directory.
+    # The entrypoint copies them to Janus's real config path and substitutes
+    # __PLACEHOLDER__ tokens with env-var values before starting Janus.
+    # (The canyan image builds Janus with prefix /usr/local, so its config
+    # path is /usr/local/etc/janus — NOT /etc/janus.)
+    volumes:
+      - ./janus/janus.jcfg:/janus-templates/janus.jcfg:ro
+      - ./janus/janus.transport.websockets.jcfg:/janus-templates/janus.transport.websockets.jcfg:ro
+      - ./janus/janus.plugin.streaming.jcfg:/janus-templates/janus.plugin.streaming.jcfg:ro
+      - ./janus/janus.plugin.audiobridge.jcfg:/janus-templates/janus.plugin.audiobridge.jcfg:ro
+    command: >
+      /bin/sh -c "
+        cp /janus-templates/*.jcfg /usr/local/etc/janus/;
+        sed -i
+          -e 's|__NAT_1_1_MAPPING__|'\"$$NAT_1_1_MAPPING\"'|g'
+          -e 's|__JANUS_ADMIN_SECRET__|'\"$$JANUS_ADMIN_SECRET\"'|g'
+          /usr/local/etc/janus/janus.jcfg;
+        sed -i
+          -e 's|__AUDIOBRIDGE_ADMIN_KEY__|'\"$$AUDIOBRIDGE_ADMIN_KEY\"'|g'
+          /usr/local/etc/janus/janus.plugin.audiobridge.jcfg;
+        exec janus
+      "
+    networks:
+      - fpv-network
+
+  control-relay:
+    build:
+      context: ./control-relay
+      dockerfile: Dockerfile
+    container_name: fpv-control-relay
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - AUTH_TOKEN=${CONTROL_AUTH_TOKEN:-changeme}
+      - PI_RECONNECT_INTERVAL=5000
+    networks:
+      - fpv-network
+
+  # Registers an AudioBridge RTP forwarder on Janus so the room's mixed
+  # browser audio is sent as Opus RTP to ${PI_TAILSCALE_IP}:5008, where
+  # pi/audio-receive.sh decodes and plays it through the Pi's speaker.
+  # The forwarder is bound to a Janus session, so this container holds the
+  # session open with keepalives and re-registers on reconnect.
+  audiobridge-bootstrap:
+    build:
+      context: ./audiobridge-bootstrap
+      dockerfile: Dockerfile
+    container_name: fpv-audiobridge-bootstrap
+    restart: unless-stopped
+    environment:
+      - JANUS_WS_URL=ws://janus:8188
+      - AUDIOBRIDGE_ROOM=1234
+      - AUDIOBRIDGE_ADMIN_KEY=${AUDIOBRIDGE_ADMIN_KEY:-changeme}
+      - PI_TAILSCALE_IP=${PI_TAILSCALE_IP:-}
+      - AUDIO_RX_PORT=5008
+    depends_on:
+      - janus
+    networks:
+      - fpv-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: fpv-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # envsubst (part of the nginx:alpine entrypoint) substitutes only this
+      # variable in /etc/nginx/templates/*.template. All other $vars pass
+      # through untouched so nginx can evaluate them at request time.
+      - SERVER_DOMAIN=${SERVER_DOMAIN:-localhost}
+      - NGINX_ENVSUBST_FILTER=^SERVER_DOMAIN$$
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - letsencrypt:/etc/letsencrypt:ro
+      - certbot-webroot:/var/www/certbot:ro
+      - ../web/dist:/usr/share/nginx/html:ro
+    # The nginx:alpine entrypoint only runs the envsubst template step when
+    # $1 is literally "nginx" or "nginx-debug" (see /docker-entrypoint.sh).
+    # We override CMD to wrap nginx in a 6-hour reload loop (so renewed TLS
+    # certs get picked up automatically), which normally would skip
+    # envsubst. We therefore invoke the envsubst script explicitly before
+    # starting nginx.
+    command: >
+      /bin/sh -c "
+        /docker-entrypoint.d/20-envsubst-on-templates.sh;
+        (while :; do sleep 6h; nginx -s reload; done) &
+        exec nginx -g 'daemon off;'
+      "
+    depends_on:
+      - janus
+      - control-relay
+    networks:
+      - fpv-network
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: fpv-certbot
+    restart: unless-stopped
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot-webroot:/var/www/certbot
+    entrypoint: /bin/sh -c
+    # Twice-daily renewal attempt. `certbot renew` is a no-op unless the
+    # cert is within 30 days of expiry, so this is safe to run hot.
+    command: >
+      "trap exit TERM;
+       while :; do
+         certbot renew --webroot -w /var/www/certbot --quiet;
+         sleep 12h & wait $${!};
+       done"
+    networks:
+      - fpv-network
+
+networks:
+  fpv-network:
+    driver: bridge
+
+volumes:
+  letsencrypt:
+  certbot-webroot:

@@ -1,0 +1,24 @@
+# Stable device symlink for the FPV Arduino Nano.
+#
+# USB-CDC enumeration order is not deterministic (e.g. /dev/ttyUSB0 vs
+# /dev/ttyUSB1 depends on boot order vs the LTE dongle). This rule exposes
+# the Nano as /dev/fpv-arduino regardless of which ttyUSB* the kernel picks.
+#
+# After editing, reload with:
+#   sudo udevadm control --reload
+#   sudo udevadm trigger
+#
+# To check that it matched:
+#   ls -l /dev/fpv-arduino
+#
+# If your Nano is not a CH340 clone, look up its VID:PID with `lsusb` and
+# add/replace a matching rule. Common alternates:
+#   - FTDI FT232:   ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001"
+#   - CP2102:       ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60"
+#   - Genuine UNO:  ATTRS{idVendor}=="2341", ATTRS{idProduct}=="0043"
+
+# CH340 / CH341 (most clone Nanos)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="fpv-arduino", MODE="0660", GROUP="dialout"
+
+# FTDI FT232 (some older Nanos)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="fpv-arduino", MODE="0660", GROUP="dialout"

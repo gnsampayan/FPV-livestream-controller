@@ -1,0 +1,43 @@
+# Janus Streaming Plugin Configuration
+# This configures the mountpoint for receiving RTP from Raspberry Pi
+
+general: {
+    # Admin key for streaming plugin API
+    admin_key = "fpvstreamingadmin"
+    
+    # Event handlers
+    events = true
+}
+
+# FPV Camera Stream Mountpoint
+# The Pi sends H.264 video RTP to port 5004 and Opus audio RTP to port 5006.
+# Both are bundled into the same WebRTC peer connection on subscribe so the
+# browser receives them as one MediaStream.
+fpv-camera: {
+    type = "rtp"
+    id = 1
+    description = "FPV Camera Stream from Raspberry Pi"
+
+    # Audio (Pi USB mic, captured by pi/audio-stream-tx.sh -> opusenc -> RTP)
+    audio = true
+    audioport = 5006
+    audiopt = 111
+    audiocodec = "opus"
+
+    # Video configuration
+    video = true
+    videoport = 5004
+    videopt = 96
+    videocodec = "h264"
+    videofmtp = "profile-level-id=42e01f;packetization-mode=1"
+
+    # Buffer settings for low latency
+    videobufferkf = false
+
+    # Secret for publishing (optional security)
+    # secret = "fpvsecret"
+
+    # Allow viewers without PIN
+    is_private = false
+}
+

@@ -1,0 +1,40 @@
+[Unit]
+Description=FPV Video Streaming Service
+After=network-online.target NetworkManager-wait-online.service
+Wants=network-online.target NetworkManager-wait-online.service
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+SupplementaryGroups=video
+WorkingDirectory=/home/pi/fpv
+
+# Deployment secrets (JANUS_HOST) are loaded from fpv.env.
+EnvironmentFile=/home/pi/fpv/fpv.env
+Environment="JANUS_PORT=5004"
+
+# Pi 3 v1.2 + LTE defaults. Lowered from 960x540@1Mbps to 854x480@700kbps so
+# software x264 has CPU headroom for the audio TX/RX pipelines that run
+# alongside this service. Override any of these without editing the script.
+Environment="VIDEO_WIDTH=854"
+Environment="VIDEO_HEIGHT=480"
+Environment="VIDEO_FRAMERATE=25"
+Environment="VIDEO_BITRATE=700000"
+Environment="KEYFRAME_INTERVAL=25"
+Environment="RTP_MTU=1200"
+Environment="CAMERA_STACK=software"
+
+ExecStart=/home/pi/fpv/video-stream.sh
+Restart=always
+RestartSec=5
+
+MemoryMax=256M
+CPUQuota=80%
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fpv-video
+
+[Install]
+WantedBy=multi-user.target

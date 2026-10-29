@@ -1,0 +1,33 @@
+# Janus AudioBridge Plugin Configuration
+#
+# Backs the browser-to-Pi push-to-talk channel. The browser joins room 1234
+# as a publisher; an RTP forwarder (registered at startup by the
+# audiobridge-bootstrap sidecar in docker-compose.yml) ships the room's
+# mixed audio as Opus RTP to the Pi's Tailscale IP on port 5008, where
+# pi/audio-receive.sh decodes it and plays through ALSA.
+
+general: {
+    # Required to authorize rtp_forward / list_forwarders on a room.
+    # Must match the value the bootstrap sidecar sends.
+    admin_key = "__AUDIOBRIDGE_ADMIN_KEY__"
+
+    events = true
+}
+
+fpv-talk: {
+    description = "FPV push-to-talk"
+    # 4-digit room id used by both web/src/hooks/useAudioBridge.ts and the
+    # bootstrap sidecar.
+    room = 1234
+
+    # 16 kHz keeps CPU + bandwidth low and is plenty for voice. The Pi's
+    # opusdec resamples to whatever alsasink wants.
+    sampling_rate = 16000
+
+    # Don't waste cycles emitting per-frame audio level events; we don't
+    # render a VU meter.
+    audiolevel_event = false
+
+    is_private = false
+    record = false
+}

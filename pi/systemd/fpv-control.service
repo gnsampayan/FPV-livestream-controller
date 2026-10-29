@@ -1,0 +1,38 @@
+[Unit]
+Description=FPV Control Daemon Service
+After=network-online.target NetworkManager-wait-online.service dev-fpv\x2darduino.device
+Wants=network-online.target NetworkManager-wait-online.service
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+SupplementaryGroups=dialout
+WorkingDirectory=/home/pi/fpv/control-daemon
+
+# Deployment secrets (CONTROL_SERVER, AUTH_TOKEN) are loaded from fpv.env.
+EnvironmentFile=/home/pi/fpv/fpv.env
+
+# Arduino link (default udev symlink).
+Environment="SERIAL_PORT=/dev/fpv-arduino"
+Environment="SERIAL_BAUD=500000"
+
+ExecStart=/usr/bin/python3 /home/pi/fpv/control-daemon/control_daemon.py
+Restart=always
+RestartSec=3
+
+# Low-latency scheduling for the 50 Hz control loop.
+Nice=-10
+IOSchedulingClass=realtime
+IOSchedulingPriority=4
+
+# Resource limits
+MemoryMax=128M
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fpv-control
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,37 @@
+# NetworkManager profile used when the LTE dongle is unplugged.
+#
+# Lower autoconnect-priority than lte-usb so LTE wins whenever both are
+# present (useful on the bench: keep the Pi on home WiFi for flashing and
+# debug, and it automatically flips to LTE the moment the car rolls out).
+#
+# EDIT the [wifi] ssid and [wifi-security] psk below before shipping. The
+# placeholders below are intentionally invalid.
+#
+# Install to:
+#   /etc/NetworkManager/system-connections/wifi-fallback.nmconnection
+# chmod 600 after copying.
+
+[connection]
+id=wifi-fallback
+type=wifi
+autoconnect=true
+autoconnect-priority=50
+
+[wifi]
+mode=infrastructure
+ssid=YOUR_WIFI_SSID
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=YOUR_WIFI_PASSWORD
+
+[ipv4]
+method=auto
+route-metric=600
+
+[ipv6]
+method=auto
+addr-gen-mode=stable-privacy
+route-metric=600
+
+[proxy]

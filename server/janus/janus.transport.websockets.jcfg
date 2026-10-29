@@ -1,0 +1,39 @@
+# Janus WebSocket Transport Configuration
+
+general: {
+    json = "indented"
+    ws = true
+    ws_port = 8188
+    ws_ip = "0.0.0.0"
+    
+    # Secure WebSocket (enable when you have SSL certs)
+    wss = false
+    # wss_port = 8989
+    # cert_pem = "/etc/janus/ssl/cert.pem"
+    # cert_key = "/etc/janus/ssl/key.pem"
+    
+    # DO NOT use "0.0.0.0/0" here -- Janus's ACL is NOT CIDR. It's a comma-
+    # separated list of string prefixes compared against the remote IP, so
+    # "0.0.0.0/0" matches literally no IP and silently rejects every client
+    # with: "IP X.X.X.X is unauthorized to connect to the WebSockets Janus
+    # API interface" (visible in `docker compose logs janus`).
+    #
+    # To allow all callers, leave ws_acl unset entirely -- missing = no ACL
+    # check. If you ever need to restrict to specific networks, use a prefix
+    # list like "172.18.," (the docker bridge subnet nginx proxies from) or
+    # "127.,::1".
+    #
+    # The upstream of /janus is always nginx in the docker-compose setup, so
+    # the real access control lives at the nginx layer (and at the Janus
+    # token auth layer if you enable it in janus.jcfg).
+    # ws_acl = "172.,127.,::1"
+}
+
+admin: {
+    admin_ws = false
+}
+
+cors: {
+    allow_origin = "*"
+}
+

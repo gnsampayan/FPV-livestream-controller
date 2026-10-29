@@ -1,0 +1,39 @@
+# NetworkManager profile for the EIOTCLUB 4G LTE USB dongle.
+#
+# The dongle is a HiLink/RNDIS device: it performs its own PDP dialing and
+# presents itself to Linux as a USB Ethernet interface (usb0 or eth1) that
+# just needs DHCP. No pppd / wvdial / qmicli is required.
+#
+# autoconnect-priority is higher than wifi-fallback so the LTE path is used
+# whenever the dongle is present.
+#
+# Install to:
+#   /etc/NetworkManager/system-connections/lte-usb.nmconnection
+# chmod 600 after copying (NetworkManager refuses world-readable files).
+
+[connection]
+id=lte-usb
+type=ethernet
+autoconnect=true
+autoconnect-priority=100
+autoconnect-retries=0
+
+[match]
+# Match either enumeration name the kernel may assign for a CDC-Ether device.
+interface-name=usb0;eth1;enp0s*u*;enx*
+
+[ethernet]
+
+[ipv4]
+method=auto
+# The LTE path goes over the public internet; treat it as the default route
+# unless a higher-priority link (like home Ethernet) is also up.
+never-default=false
+route-metric=100
+
+[ipv6]
+method=auto
+addr-gen-mode=stable-privacy
+route-metric=100
+
+[proxy]
